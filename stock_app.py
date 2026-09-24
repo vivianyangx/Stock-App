@@ -276,6 +276,7 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .view-entry { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; }
 .view-profit { color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; }
 .view-risk { color:#c24453; background:#fff0f1; border:1px solid #ffd7dc; }
+.chart-hint { color:#85808f; font-size:9px; line-height:1.45; margin:5px 3px 8px; }
 .price-panel {
     background:linear-gradient(145deg,#f1edff 0%,#f7f6fb 58%,#f4f8e9 100%);
     border:1px solid #e6e0f5; border-radius:20px; padding:17px 17px; margin-bottom:10px;
@@ -626,6 +627,7 @@ def build_mobile_chart(df: pd.DataFrame, window: str) -> go.Figure:
                    font=dict(color='#f8f8fb', size=12)),
         xaxis_rangeslider_visible=False,
         hovermode='x unified',
+        dragmode='pan',
         hoverlabel=dict(bgcolor='#f7f7f3', bordercolor='#e4e4e8',
                         font=dict(color='#161621', size=11)),
         legend=dict(orientation='h', x=.98, xanchor='right', y=1.08,
@@ -633,14 +635,18 @@ def build_mobile_chart(df: pd.DataFrame, window: str) -> go.Figure:
         showlegend=True,
     )
     fig.update_xaxes(
-        showgrid=False, zeroline=False, fixedrange=True,
+        showgrid=False, zeroline=False, fixedrange=False,
         tickformat='%b %d' if sessions <= 66 else '%b', nticks=5,
         tickfont=dict(color='#767682', size=9),
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        spikecolor='rgba(255,255,255,.35)', spikedash='dot', spikethickness=1,
         rangebreaks=[dict(bounds=['sat', 'mon'])]
     )
     fig.update_yaxes(
         side='right', showgrid=True, gridcolor='rgba(255,255,255,.07)',
-        zeroline=False, fixedrange=True, tickprefix='$', nticks=6,
+        zeroline=False, fixedrange=False, tickprefix='$', nticks=6,
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        spikecolor='rgba(255,255,255,.35)', spikedash='dot', spikethickness=1,
         tickfont=dict(color='#767682', size=9)
     )
     return fig
@@ -907,10 +913,19 @@ with tab_price:
     </div>
     """, unsafe_allow_html=True)
 
+    st.markdown(
+        '<div class="chart-hint">Drag to move · Pinch or scroll to zoom · '
+        'Tap a candle for OHLC · Double-click to reset</div>',
+        unsafe_allow_html=True
+    )
     chart = build_mobile_chart(df, chart_window)
     st.plotly_chart(chart, width='stretch', config={
-        'displayModeBar': False, 'displaylogo': False, 'scrollZoom': False,
-        'responsive': True
+        'displayModeBar': 'hover', 'displaylogo': False, 'scrollZoom': True,
+        'doubleClick': 'reset+autosize', 'responsive': True,
+        'modeBarButtonsToRemove': [
+            'select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d',
+            'autoScale2d', 'toggleSpikelines'
+        ]
     })
 
     st.markdown(f"""
