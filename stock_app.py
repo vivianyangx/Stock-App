@@ -264,6 +264,18 @@ header { background: transparent !important; }
     font-size:8px; font-weight:800; letter-spacing:.7px;
 }
 .market-dot { width:6px; height:6px; border-radius:50%; background:#95c824; box-shadow:0 0 0 3px rgba(149,200,36,.14); }
+.search-label { color:#827b90; font-size:9px; font-weight:800; letter-spacing:.9px; margin:2px 3px 6px; }
+div[data-testid="stForm"] { border:0 !important; padding:0 !important; margin:0 0 10px !important; }
+div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8; border-radius:999px; min-height:45px; padding-left:17px; box-shadow:0 5px 16px rgba(62,53,82,.04); }
+.view-banner { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fff; border:1px solid #e8e4ef; border-radius:16px; padding:12px 14px; margin:8px 0 12px; box-shadow:0 6px 18px rgba(62,53,82,.045); }
+.view-copy { min-width:0; }
+.view-title { color:#171522; font-size:15px; font-weight:850; margin-top:3px; }
+.view-description { color:#85808f; font-size:9px; line-height:1.45; margin-top:4px; }
+.view-badge { flex:0 0 auto; border-radius:999px; padding:7px 10px; font-size:9px; font-weight:850; letter-spacing:.45px; }
+.view-wait { color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; }
+.view-entry { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; }
+.view-profit { color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; }
+.view-risk { color:#c24453; background:#fff0f1; border:1px solid #ffd7dc; }
 .price-panel {
     background:linear-gradient(145deg,#f1edff 0%,#f7f6fb 58%,#f4f8e9 100%);
     border:1px solid #e6e0f5; border-radius:20px; padding:17px 17px; margin-bottom:10px;
@@ -716,10 +728,20 @@ def data_quality(frame: pd.DataFrame) -> dict:
 if 'ticker_input' not in st.session_state:
     st.session_state.ticker_input = 'META'
 
+st.markdown('<div class="search-label">FIND A STOCK OR ETF</div>', unsafe_allow_html=True)
+with st.form("ticker_search", clear_on_submit=False, border=False):
+    search_col, submit_col = st.columns([3, 1])
+    with search_col:
+        st.text_input(
+            "Search ticker", key="ticker_input", placeholder="META, TQQQ, AAPL",
+            label_visibility="collapsed"
+        )
+    with submit_col:
+        st.form_submit_button("Analyze", width="stretch")
+
+ticker = st.session_state.ticker_input.upper().strip()
+
 with st.expander("Tracking settings", expanded=False):
-    ticker = st.text_input(
-        "Ticker", key="ticker_input", placeholder="META, AAPL, NVDA"
-    ).upper().strip()
     settings_left, settings_right = st.columns(2)
     with settings_left:
         chart_window = st.selectbox("Chart range", ["1M", "3M", "6M", "1Y"], index=1)
@@ -815,31 +837,56 @@ tab_price, tab_trend, tab_momentum, tab_risk, tab_evidence, tab_company, tab_new
 ])
 
 with tab_price:
-    if cur < plan['entry_low']:
+    if cur < plan['stop']:
+        current_view = "RISK WARNING"
+        view_class = "view-risk"
+        price_guide = (
+            "Price is below the risk-review level. Recheck the original idea and avoid "
+            "treating a lower price as automatically safer."
+        )
+    elif cur < plan['entry_low']:
+        current_view = "WATCH FOR STABILITY"
+        view_class = "view-wait"
         price_guide = (
             "Price is below the potential buy zone. A lower price is not automatically "
             "safer—wait for the price to stabilize before making a decision."
         )
     elif cur <= plan['entry_high']:
+        current_view = "WATCH FOR ENTRY"
+        view_class = "view-entry"
         price_guide = (
             "Price is inside the potential buy zone. Watch whether it holds this area; "
             "a zone is not a guarantee that the price will bounce."
         )
     elif cur < plan['target_1']:
+        current_view = "WAIT"
+        view_class = "view-wait"
         price_guide = (
             "Price is between the buy and sell watch zones. This is usually a wait-and-review "
             "area rather than an obvious entry or exit."
         )
     elif cur <= plan['target_2']:
+        current_view = "REVIEW PROFITS"
+        view_class = "view-profit"
         price_guide = (
             "Price is inside the potential sell / profit-taking zone. If you already own it, "
             "review whether to hold or reduce; this is not a guaranteed top."
         )
     else:
+        current_view = "EXTENDED"
+        view_class = "view-risk"
         price_guide = (
             "Price is above the potential sell zone. Momentum may continue, but reversal risk "
             "is higher; review the position instead of assuming it must keep rising."
         )
+
+    buy_pct_low = (plan['entry_low'] / cur - 1) * 100
+    buy_pct_high = (plan['entry_high'] / cur - 1) * 100
+    sell_pct_low = (plan['target_1'] / cur - 1) * 100
+    sell_pct_high = (plan['target_2'] / cur - 1) * 100
+    risk_pct = (plan['stop'] / cur - 1) * 100
+    buy_distance = f"{min(buy_pct_low, buy_pct_high):+.1f}% to {max(buy_pct_low, buy_pct_high):+.1f}% vs current"
+    sell_distance = f"{min(sell_pct_low, sell_pct_high):+.1f}% to {max(sell_pct_low, sell_pct_high):+.1f}% vs current"
 
     st.markdown(f"""
     <div class="price-panel">
@@ -848,14 +895,15 @@ with tab_price:
       <div class="{change_class}">{chg_1d:+.2f}% <span class="mini-copy">last session</span></div>
     </div>
     <div class="stat-grid">
-      <div class="stat-cell"><div class="stat-label">Current regime</div><div class="stat-value">{regime}</div></div>
-      <div class="stat-cell"><div class="stat-label">Data integrity</div><div class="stat-value">{quality['status']}</div></div>
+      <div class="stat-cell"><div class="stat-label">Market structure</div><div class="stat-value">{regime}</div></div>
+      <div class="stat-cell"><div class="stat-label">1-month move</div><div class="stat-value">{chg_20d:+.2f}%</div></div>
     </div>
-    <div class="detail-card">
-      <div class="detail-row"><span>Provider</span><b>{provider}</b></div>
-      <div class="detail-row"><span>Price type</span><b>Official daily close · USD</b></div>
-      <div class="detail-row"><span>As of</span><b>{quality['as_of']}</b></div>
-      <div class="detail-row"><span>Integrity check</span><b>{quality_note}</b></div>
+    <div class="view-banner">
+      <div class="view-copy">
+        <div class="eyebrow">Current view</div>
+        <div class="view-description">{price_guide}</div>
+      </div>
+      <div class="view-badge {view_class}">{current_view}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -868,20 +916,26 @@ with tab_price:
     st.markdown(f"""
     <div class="eyebrow" style="margin:16px 3px 8px;">SIMPLE PRICE GUIDE · RESEARCH ONLY</div>
     <div class="plan-strip">
-      <div class="mobile-card"><div class="eyebrow">Potential buy zone</div><div class="value lime">${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div></div>
-      <div class="mobile-card"><div class="eyebrow">Potential sell / trim zone</div><div class="value purple">${plan['target_1']:.2f}–${plan['target_2']:.2f}</div></div>
+      <div class="mobile-card"><div class="eyebrow">Potential buy zone</div><div class="value lime">${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div><div class="mini-copy">{buy_distance}</div></div>
+      <div class="mobile-card"><div class="eyebrow">Potential sell / trim zone</div><div class="value purple">${plan['target_1']:.2f}–${plan['target_2']:.2f}</div><div class="mini-copy">{sell_distance}</div></div>
     </div>
     <div class="mobile-card" style="margin-top:7px;">
       <div class="eyebrow">If price falls below</div>
       <div class="value red">${plan['stop']:.2f}</div>
-      <div class="mini-copy">Reconsider the idea and review risk. This is not an automatic sell order.</div>
-    </div>
-    <div class="detail-card" style="margin-top:9px;">
-      <div class="detail-row"><span>What this means now</span><b>${cur:.2f}</b></div>
-      <div class="mobile-note" style="padding:11px 0;">{price_guide}</div>
+      <div class="mini-copy">{risk_pct:+.1f}% vs current · Reconsider the idea and review risk.</div>
     </div>
     <div class="mobile-note">These ranges are calculated from recent price structure and volatility. They help users plan what to watch; they are not personalized advice, guaranteed prices or automatic orders.</div>
     """, unsafe_allow_html=True)
+
+    with st.expander("Data source & quality", expanded=False):
+        st.markdown(f"""
+        <div class="detail-card" style="margin-top:0;">
+          <div class="detail-row"><span>Provider</span><b>{provider}</b></div>
+          <div class="detail-row"><span>Price type</span><b>Official daily close · USD</b></div>
+          <div class="detail-row"><span>As of</span><b>{quality['as_of']}</b></div>
+          <div class="detail-row"><span>Integrity check</span><b>{quality_note}</b></div>
+        </div>
+        """, unsafe_allow_html=True)
 
     with st.expander("How to read this page"):
         st.markdown(f"""
