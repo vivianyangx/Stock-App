@@ -914,17 +914,16 @@ with tab_price:
     """, unsafe_allow_html=True)
 
     st.markdown(
-        '<div class="chart-hint">Drag to move · Pinch or scroll to zoom · '
-        'Tap a candle for OHLC · Double-click to reset</div>',
+        '<div class="chart-hint">Drag to move · Use + / − to zoom · '
+        'Tap a candle for OHLC · Reset axes to return</div>',
         unsafe_allow_html=True
     )
     chart = build_mobile_chart(df, chart_window)
     st.plotly_chart(chart, width='stretch', config={
-        'displayModeBar': 'hover', 'displaylogo': False, 'scrollZoom': True,
+        'displayModeBar': True, 'displaylogo': False, 'scrollZoom': True,
         'doubleClick': 'reset+autosize', 'responsive': True,
         'modeBarButtonsToRemove': [
-            'select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d',
-            'autoScale2d', 'toggleSpikelines'
+            'select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'
         ]
     })
 
