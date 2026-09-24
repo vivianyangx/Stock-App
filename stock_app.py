@@ -317,7 +317,16 @@ label, .stMarkdown, [data-testid="stCaptionContainer"] { color:#34343d; }
 
 @media (max-width: 560px) {
     .stApp { background:#f8f8f5; }
-    .block-container { margin:0; border:0; border-radius:0; box-shadow:none; max-width:100% !important; min-height:100vh; }
+    .block-container { margin:0; border:0; border-radius:0; box-shadow:none; max-width:100% !important; min-height:100vh; padding-bottom:calc(34px + env(safe-area-inset-bottom)) !important; }
+    .plan-strip { grid-template-columns:1fr; gap:9px; }
+    .view-banner { position:sticky; top:8px; z-index:20; backdrop-filter:blur(14px); }
+    .mobile-note, .mini-copy, .ticker-company { font-size:11px; }
+    .detail-row { font-size:12px; }
+    .stat-label, .eyebrow { font-size:10px; }
+    .stTabs [data-baseweb="tab"] { min-height:44px; padding-top:12px; }
+    .js-plotly-plot .modebar { opacity:1 !important; }
+    .js-plotly-plot .modebar-btn { width:31px !important; height:31px !important; }
+    .js-plotly-plot .modebar-btn svg { width:18px !important; height:18px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -734,16 +743,24 @@ def data_quality(frame: pd.DataFrame) -> dict:
 if 'ticker_input' not in st.session_state:
     st.session_state.ticker_input = 'META'
 
+def choose_quick_ticker() -> None:
+    selected = st.session_state.get('quick_ticker')
+    if selected:
+        st.session_state.ticker_input = selected
+
 st.markdown('<div class="search-label">FIND A STOCK OR ETF</div>', unsafe_allow_html=True)
-with st.form("ticker_search", clear_on_submit=False, border=False):
-    search_col, submit_col = st.columns([3, 1])
-    with search_col:
-        st.text_input(
-            "Search ticker", key="ticker_input", placeholder="META, TQQQ, AAPL",
-            label_visibility="collapsed"
-        )
-    with submit_col:
-        st.form_submit_button("Analyze", width="stretch")
+st.text_input(
+    "Search ticker", key="ticker_input", placeholder="META, TQQQ, AAPL",
+    label_visibility="collapsed", help="Type a ticker and press Enter to analyze."
+)
+
+st.markdown('<div class="search-label" style="margin-top:-2px;">QUICK ACCESS</div>', unsafe_allow_html=True)
+quick_symbols = ['META', 'TQQQ', 'AAPL', 'NVDA']
+st.pills(
+    "Quick access", quick_symbols, key="quick_ticker",
+    label_visibility="collapsed", selection_mode="single",
+    on_change=choose_quick_ticker
+)
 
 ticker = st.session_state.ticker_input.upper().strip()
 
@@ -838,11 +855,19 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_price, tab_trend, tab_momentum, tab_risk, tab_evidence, tab_company, tab_news = st.tabs([
-    "Price", "Trend", "Momentum", "Risk", "Evidence", "Company", "News"
+tab_overview, tab_signals, tab_risk, tab_research = st.tabs([
+    "Overview", "Signals", "Risk", "Research"
 ])
 
-with tab_price:
+with tab_signals:
+    signal_trend, signal_momentum = st.tabs(["Trend", "Momentum"])
+
+with tab_research:
+    research_evidence, research_company, research_news = st.tabs([
+        "Evidence", "Company", "News"
+    ])
+
+with tab_overview:
     if cur < plan['stop']:
         current_view = "RISK WARNING"
         view_class = "view-risk"
@@ -920,7 +945,7 @@ with tab_price:
     )
     chart = build_mobile_chart(df, chart_window)
     st.plotly_chart(chart, width='stretch', config={
-        'displayModeBar': True, 'displaylogo': False, 'scrollZoom': True,
+        'displayModeBar': True, 'displaylogo': False, 'scrollZoom': False,
         'doubleClick': 'reset+autosize', 'responsive': True,
         'modeBarButtonsToRemove': [
             'select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'
@@ -966,7 +991,7 @@ with tab_price:
 **If price falls below** marks where the current idea may no longer be working and deserves a risk review. It is not an automatic sell order.
         """)
 
-with tab_trend:
+with signal_trend:
     st.markdown(f"""
     <div class="stat-grid">
       <div class="stat-cell"><div class="stat-label">Price regime</div><div class="stat-value">{regime}</div></div>
@@ -989,7 +1014,7 @@ with tab_trend:
     </div>
     """, unsafe_allow_html=True)
 
-with tab_momentum:
+with signal_momentum:
     macd_state = "Above signal" if macd > macd_signal else "Below signal"
     rsi_state = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
     st.markdown(f"""
@@ -1027,7 +1052,7 @@ with tab_risk:
     <div class="mobile-note">Historical VaR means roughly 5% of observed sessions were worse than this return. It is not a maximum-loss estimate; gaps and crises can be much worse.</div>
     """, unsafe_allow_html=True)
 
-with tab_evidence:
+with research_evidence:
     evidence_html = ''.join(
         f"""<div class="detail-card">
           <div class="detail-row"><span>Forward horizon</span><b>{row['horizon']}</b></div>
@@ -1049,7 +1074,7 @@ with tab_evidence:
     <div class="mobile-note">Evidence is descriptive, not a forecast. Observations are spaced by the forward horizon to reduce overlap, but small samples, regime change and repeated testing can still mislead. A credible model must later be tested on unseen data and against a benchmark.</div>
     """, unsafe_allow_html=True)
 
-with tab_company:
+with research_company:
     sector_text = html.escape(str(info.get('sector') or '—'))
     industry_text = html.escape(str(info.get('industry') or '—'))
     employees = finite(info.get('fullTimeEmployees'))
@@ -1075,7 +1100,7 @@ with tab_company:
     <div class="mobile-card" style="margin-top:8px;"><div class="eyebrow">BUSINESS SUMMARY</div><div style="font-size:10px;line-height:1.6;color:#55555f;margin-top:8px;">{summary}</div></div>
     """, unsafe_allow_html=True)
 
-with tab_news:
+with research_news:
     sentiment_label = "Positive" if sent_avg > .1 else "Negative" if sent_avg < -.1 else "Neutral"
     st.markdown(f"""
     <div class="price-panel">
