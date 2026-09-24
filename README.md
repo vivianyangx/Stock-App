@@ -1,6 +1,6 @@
-# Investor Research
+# Investor Research + Options Lab
 
-A mobile-first Streamlit dashboard for tracking stocks and ETFs. It turns market data into plain-English reference zones, trend signals, momentum, risk context, company facts, and recent news.
+A mobile-first Streamlit tracker for stock and ETF research. The Options Lab adds delayed option-chain screening, quote-quality checks, modeled Greeks, defined-risk strategy comparisons, and price/time/volatility scenarios.
 
 ## Run locally
 
@@ -12,8 +12,9 @@ streamlit run stock_app.py
 ## Deploy on Streamlit Community Cloud
 
 1. Put `stock_app.py` and `requirements.txt` in the root of a public GitHub repository.
-2. In Streamlit Community Cloud, choose **Deploy a public app from GitHub**.
-3. Select the repository and `main` branch.
-4. Set **Main file path** to `stock_app.py` and deploy.
+2. Select the repository and `main` branch in Streamlit Community Cloud.
+3. Set **Main file path** to `stock_app.py` and deploy.
 
-Market data is fetched when the app loads or reruns. It is for research and education, not investment advice or trade execution.
+Option-chain data is requested only when the user presses **Load live option chain**. Quotes may be delayed, incomplete, stale, or unavailable. When implied volatility is absent, scenario calculations are explicitly labeled and use recent realized volatility as an estimate.
+
+This app is for research and education. It does not connect to a broker, submit orders, predict future prices, or provide personalized investment advice.
