@@ -316,6 +316,17 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .option-table td { color:#292733; padding:9px 6px; border-bottom:1px solid #efedf2; }
 .option-table td:not(:first-child), .option-table th:not(:first-child) { text-align:right; }
 .risk-defined { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; border-radius:999px; padding:5px 8px; font-size:9px; font-weight:800; }
+.guide-steps { display:grid; gap:7px; margin:9px 0 13px; }
+.guide-step { display:flex; gap:11px; align-items:flex-start; background:#fff; border:1px solid #e8e4ef; border-radius:15px; padding:11px 12px; }
+.guide-number { width:25px; height:25px; flex:0 0 25px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:#eee8ff; color:#7045df; font-size:11px; font-weight:850; }
+.guide-title { color:#1b1922; font-size:11px; font-weight:800; margin-bottom:2px; }
+.guide-copy { color:#85808f; font-size:9px; line-height:1.45; }
+.plain-answer { background:linear-gradient(145deg,#f0ebff,#faf9fd 62%,#f4f8e9); border:1px solid #e2d8ff; border-radius:18px; padding:15px; margin:10px 0; }
+.plain-answer-title { color:#191720; font-size:16px; line-height:1.3; font-weight:850; margin:4px 0 6px; }
+.plain-answer-copy { color:#696572; font-size:10px; line-height:1.55; }
+.answer-chip { display:inline-block; border-radius:999px; padding:5px 8px; margin:7px 4px 0 0; color:#5c3abc; background:#eee8ff; font-size:9px; font-weight:750; }
+.answer-chip.green { color:#607d12; background:#f0f7d9; }
+.answer-chip.red { color:#bf4554; background:#fff0f1; }
 .stTabs [data-baseweb="tab-list"] { background:transparent; padding:0; border-radius:0; gap:22px; border-bottom:1px solid #e5e1ea; box-shadow:none; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
 .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
 .stTabs [data-baseweb="tab"] { background:transparent; border:0; color:#777181; border-radius:0; padding:10px 2px 12px; flex:0 0 auto; font-weight:650; }
@@ -1185,25 +1196,30 @@ with tab_options:
     }[horizon]
     st.markdown(f"""
     <div class="option-hero">
-      <div class="eyebrow">OPTIONS LAB · PAPER RESEARCH</div>
-      <div class="option-hero-value">Turn the {safe_ticker} view into a defined-risk scenario</div>
-      <div class="option-hero-copy">Compare a contract's price, time decay, implied volatility and liquidity. No broker is connected and nothing here submits an order.</div>
+      <div class="eyebrow">OPTIONS LAB · BEGINNER MODE</div>
+      <div class="option-hero-value">What could I gain or lose?</div>
+      <div class="option-hero-copy">This page does not predict whether {safe_ticker} will rise or fall. It helps you test an idea and understand the cost, break-even price and worst case before taking any action.</div>
+    </div>
+    <div class="guide-steps">
+      <div class="guide-step"><div class="guide-number">1</div><div><div class="guide-title">Start with your opinion</div><div class="guide-copy">Use the Price and Trend pages first, then choose whether you think the stock may rise or fall.</div></div></div>
+      <div class="guide-step"><div class="guide-number">2</div><div><div class="guide-title">Choose how much time you want</div><div class="guide-copy">More time normally costs more. Very short expirations lose value faster.</div></div></div>
+      <div class="guide-step"><div class="guide-number">3</div><div><div class="guide-title">Read the four answers</div><div class="guide-copy">Focus on pay today, break-even price, maximum loss and maximum profit. Everything technical is optional.</div></div></div>
     </div>
     """, unsafe_allow_html=True)
 
     option_session_key = f'options_loaded_{ticker}'
-    if st.button("Load live option chain", key=f'load_options_{ticker}',
+    if st.button("Start an options scenario", key=f'load_options_{ticker}',
                  type="primary", width="stretch"):
         st.session_state[option_session_key] = True
 
     if not st.session_state.get(option_session_key, False):
         st.markdown("""
         <div class="detail-card">
-          <div class="detail-row"><span>What this adds</span><b>IV · Greeks · Liquidity</b></div>
-          <div class="detail-row"><span>Strategies</span><b>Long option · Debit spread</b></div>
-          <div class="detail-row"><span>Risk style</span><b>Defined maximum loss</b></div>
+          <div class="detail-row"><span>You will choose</span><b>Direction · Time · Risk style</b></div>
+          <div class="detail-row"><span>You will learn</span><b>Cost · Break-even · Max loss</b></div>
+          <div class="detail-row"><span>Trading</span><b>None — research only</b></div>
         </div>
-        <div class="mobile-note">Option chains are loaded only when requested because quotes can be slower and may be delayed. Start with the button above.</div>
+        <div class="mobile-note">Quotes are loaded only when requested and may be delayed. Starting the scenario does not buy or sell anything.</div>
         """, unsafe_allow_html=True)
     else:
         try:
@@ -1220,21 +1236,39 @@ with tab_options:
 
             control_left, control_right = st.columns(2)
             with control_left:
-                option_view = st.selectbox(
-                    "Underlying view", ["Bullish", "Bearish"],
+                view_choice = st.selectbox(
+                    "1. What do you think may happen?",
+                    ["Price may rise", "Price may fall"],
                     index=0 if regime in ('Uptrend', 'Recovery') or chg_20d >= 0 else 1,
                     key=f'option_view_{ticker}',
                 )
+                option_view = 'Bullish' if view_choice == "Price may rise" else 'Bearish'
             with control_right:
                 expiration = st.selectbox(
-                    "Expiration", expirations, index=preferred,
+                    "2. How much time do you want?", expirations, index=preferred,
+                    format_func=lambda value: (
+                        f"{pd.Timestamp(value).strftime('%b %d, %Y')} · "
+                        f"{max(0, (pd.Timestamp(value) - today).days)} days"
+                    ),
                     key=f'option_expiration_{ticker}',
                 )
             option_type = 'call' if option_view == 'Bullish' else 'put'
-            strategy_choices = (["Long Call", "Call Debit Spread"] if option_type == 'call'
-                                else ["Long Put", "Put Debit Spread"])
-            strategy = st.selectbox("Defined-risk structure", strategy_choices,
-                                    key=f'option_strategy_{ticker}_{option_type}')
+            if option_type == 'call':
+                strategy_map = {
+                    "Buy a call · simpler, profit is not capped": "Long Call",
+                    "Call spread · lower cost, profit is capped": "Call Debit Spread",
+                }
+            else:
+                strategy_map = {
+                    "Buy a put · simpler, benefits from a decline": "Long Put",
+                    "Put spread · lower cost, profit is capped": "Put Debit Spread",
+                }
+            strategy_choice = st.selectbox(
+                "3. How do you want to limit the risk?", list(strategy_map),
+                key=f'option_strategy_{ticker}_{option_type}',
+            )
+            strategy = strategy_map[strategy_choice]
+            st.caption("A spread normally costs less, but it also limits how much you can make.")
             expiration_date = pd.Timestamp(expiration)
             dte = max(0, int((expiration_date - today).days))
             dividend = min(max(finite(info.get('dividendYield')), 0), .20)
@@ -1255,11 +1289,10 @@ with tab_options:
             contracts = chain['contractSymbol'].astype(str).tolist()
 
             selected_symbol = st.selectbox(
-                "Contract to inspect", contracts,
+                "4. Choose a strike price", contracts,
                 format_func=lambda symbol: (
-                    f"${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} "
-                    f"{option_type.upper()} · Δ {finite(chain.loc[chain['contractSymbol'].eq(symbol), 'delta'].iloc[0]):+.2f} · "
-                    f"mid ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]):.2f}"
+                    f"Strike ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
+                    f"about ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} per contract"
                 ),
                 key=f'option_contract_{ticker}_{expiration}_{option_type}',
             )
@@ -1279,14 +1312,16 @@ with tab_options:
                     raise ValueError('No compatible short leg was returned for this spread.')
                 short_symbols = short_chain['contractSymbol'].astype(str).tolist()
                 default_short = int(np.abs(short_chain['strike'].to_numpy() - reference).argmin())
-                short_symbol = st.selectbox(
-                    "Short leg", short_symbols, index=default_short,
-                    format_func=lambda symbol: (
-                        f"Sell ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} "
-                        f"{option_type.upper()} · mid ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]):.2f}"
-                    ),
-                    key=f'option_short_{ticker}_{expiration}_{option_type}',
-                )
+                with st.expander("Adjust the spread's profit cap (optional)", expanded=False):
+                    st.caption("The app has selected a second strike. Changing it changes both the cost and maximum profit.")
+                    short_symbol = st.selectbox(
+                        "Second strike", short_symbols, index=default_short,
+                        format_func=lambda symbol: (
+                            f"${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
+                            f"market value about ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f}"
+                        ),
+                        key=f'option_short_{ticker}_{expiration}_{option_type}',
+                    )
                 short_row = short_chain.loc[short_chain['contractSymbol'].eq(short_symbol)].iloc[0]
 
             long_score, long_label, quality_notes = contract_quality(long_row, desired_days)
@@ -1331,42 +1366,66 @@ with tab_options:
             spread_display = (f'{spread_pct:.1f}%' if np.isfinite(spread_pct) and spread_pct < 900
                               else 'Unavailable')
             score_notes = ' · '.join(quality_notes)
-            max_profit_text = 'Unlimited' if np.isinf(max_profit) else f'${max_profit:,.0f}'
+            max_profit_text = 'Not capped' if np.isinf(max_profit) else f'${max_profit:,.0f}'
+            expiration_pretty = expiration_date.strftime('%b %d, %Y')
+            move_to_breakeven = (breakeven / cur - 1) * 100
+            if option_type == 'call':
+                profit_condition = f'above ${breakeven:,.2f}'
+                move_explanation = f'{abs(move_to_breakeven):.1f}% above today' if move_to_breakeven >= 0 else f'{abs(move_to_breakeven):.1f}% below today'
+                plain_title = f'{safe_ticker} needs to finish above ${breakeven:,.2f}'
+                direction_copy = 'You selected a rising-price idea.'
+            else:
+                profit_condition = f'below ${breakeven:,.2f}'
+                move_explanation = f'{abs(move_to_breakeven):.1f}% below today' if move_to_breakeven <= 0 else f'{abs(move_to_breakeven):.1f}% above today'
+                plain_title = f'{safe_ticker} needs to finish below ${breakeven:,.2f}'
+                direction_copy = 'You selected a falling-price idea.'
             st.markdown(f"""
-            <div class="mobile-card">
-              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
-                <div><div class="eyebrow">CONTRACT QUALITY</div><div class="value">{quality_score}/100 · {quality_label}</div></div>
-                <span class="risk-defined">DEFINED RISK</span>
-              </div>
-              <div class="quality-bar"><div class="quality-fill" style="width:{quality_score}%;"></div></div>
-              <div class="mini-copy">{score_notes}</div>
+            <div class="plain-answer">
+              <div class="eyebrow">YOUR SCENARIO IN PLAIN ENGLISH</div>
+              <div class="plain-answer-title">{plain_title} on {expiration_pretty}</div>
+              <div class="plain-answer-copy">{direction_copy} At expiration, the stock must be {profit_condition} for this position to have a profit before fees. That break-even level is {move_explanation}. If the idea is wrong, the most this defined-risk position can lose is the amount paid.</div>
+              <span class="answer-chip">Today ${cur:,.2f}</span>
+              <span class="answer-chip green">Break-even ${breakeven:,.2f}</span>
+              <span class="answer-chip red">Max loss ${max_loss:,.0f}</span>
             </div>
             <div class="stat-grid">
-              <div class="stat-cell"><div class="stat-label">Debit · 1 contract</div><div class="stat-value">${max_loss:,.0f}</div></div>
-              <div class="stat-cell"><div class="stat-label">Breakeven at expiry</div><div class="stat-value">${breakeven:,.2f}</div></div>
-              <div class="stat-cell"><div class="stat-label">Maximum loss</div><div class="stat-value">${max_loss:,.0f}</div></div>
-              <div class="stat-cell"><div class="stat-label">Maximum profit</div><div class="stat-value">{max_profit_text}</div></div>
+              <div class="stat-cell"><div class="stat-label">You pay today · 1 contract</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Needs to finish</div><div class="stat-value">{profit_condition}</div></div>
+              <div class="stat-cell"><div class="stat-label">Most you can lose</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Most you can make</div><div class="stat-value">{max_profit_text}</div></div>
             </div>
-            <div class="detail-card">
-              <div class="detail-row"><span>Expiration / DTE</span><b>{expiration} · {dte} days</b></div>
-              <div class="detail-row"><span>Long-leg bid / ask</span><b>${finite(long_row['bid']):.2f} / ${finite(long_row['ask']):.2f}</b></div>
-              <div class="detail-row"><span>Bid–ask spread</span><b>{spread_display}</b></div>
-              <div class="detail-row"><span>Volume / open interest</span><b>{finite(long_row['volume']):,.0f} / {finite(long_row['openInterest']):,.0f}</b></div>
-              <div class="detail-row"><span>{iv_label}</span><b>{iv*100:.1f}%</b></div>
-              <div class="detail-row"><span>IV-implied range to expiry</span><b>${max(0, cur-implied_move):,.2f}–${cur+implied_move:,.2f}</b></div>
+            <div class="mobile-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <div><div class="eyebrow">QUOTE &amp; LIQUIDITY CHECK</div><div class="value">{quality_label} · {quality_score}/100</div></div>
+                <span class="risk-defined">LOSS CAPPED</span>
+              </div>
+              <div class="quality-bar"><div class="quality-fill" style="width:{quality_score}%;"></div></div>
+              <div class="mini-copy">This checks whether the quote may be costly or difficult to trade. It does not measure the chance of profit. {score_notes}</div>
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown(f"""
-            <div class="eyebrow" style="margin:16px 3px 8px;">{greeks_label}</div>
-            <div class="stat-grid">
-              <div class="stat-cell"><div class="stat-label">Delta</div><div class="stat-value">{net_delta:+.3f}</div></div>
-              <div class="stat-cell"><div class="stat-label">Gamma</div><div class="stat-value">{net_gamma:.4f}</div></div>
-              <div class="stat-cell"><div class="stat-label">Theta / day</div><div class="stat-value">${net_theta:+.3f}</div></div>
-              <div class="stat-cell"><div class="stat-label">Vega / IV point</div><div class="stat-value">${net_vega:.3f}</div></div>
-            </div>
-            <div class="mobile-note">Greeks are model estimates using the selected volatility input, a 4% rate and reported dividend yield. They change continuously and are not guaranteed.</div>
-            """, unsafe_allow_html=True)
+            if quality_score < 45:
+                st.warning("This quote has weak liquidity or an unusually wide spread. The displayed cost may be hard to obtain in the market.")
+
+            with st.expander("Advanced option details · optional", expanded=False):
+                st.markdown(f"""
+                <div class="detail-card">
+                  <div class="detail-row"><span>Expiration</span><b>{expiration_pretty} · {dte} days</b></div>
+                  <div class="detail-row"><span>Bid / ask</span><b>${finite(long_row['bid']):.2f} / ${finite(long_row['ask']):.2f}</b></div>
+                  <div class="detail-row"><span>Cost between bid and ask</span><b>{spread_display}</b></div>
+                  <div class="detail-row"><span>Contracts traded / open</span><b>{finite(long_row['volume']):,.0f} / {finite(long_row['openInterest']):,.0f}</b></div>
+                  <div class="detail-row"><span>{iv_label}</span><b>{iv*100:.1f}%</b></div>
+                  <div class="detail-row"><span>Market-implied price range</span><b>${max(0, cur-implied_move):,.2f}–${cur+implied_move:,.2f}</b></div>
+                </div>
+                <div class="eyebrow" style="margin:16px 3px 8px;">{greeks_label}</div>
+                <div class="stat-grid">
+                  <div class="stat-cell"><div class="stat-label">Stock sensitivity · Delta</div><div class="stat-value">about ${net_delta * 100:+.0f} per $1 move</div></div>
+                  <div class="stat-cell"><div class="stat-label">Daily time effect · Theta</div><div class="stat-value">about ${net_theta * 100:+.0f}/day</div></div>
+                  <div class="stat-cell"><div class="stat-label">Delta change · Gamma</div><div class="stat-value">{net_gamma:.4f}</div></div>
+                  <div class="stat-cell"><div class="stat-label">Volatility effect · Vega</div><div class="stat-value">${net_vega * 100:.0f}/point</div></div>
+                </div>
+                <div class="mobile-note">These are changing model estimates, not promises. Delta means the estimated dollar change for one contract when the stock moves $1. Theta estimates one day of time loss, assuming other inputs stay the same.</div>
+                """, unsafe_allow_html=True)
 
             earnings_value = info.get('earningsTimestamp')
             try:
@@ -1379,14 +1438,24 @@ with tab_options:
             max_scenario_days = max(dte, 1)
             default_days = min(max_scenario_days, 7 if desired_days == 30 else 30 if desired_days == 75 else 60)
             scenario_days = st.slider(
-                "Days until the scenario", 0, max_scenario_days, default_days,
+                "What if this many days pass?", 0, max_scenario_days, default_days,
                 key=f'option_scenario_days_{ticker}_{expiration}_{selected_symbol}',
             )
             remaining_years = max(dte - scenario_days, 0) / 365
-            price_scenarios = [
-                ('Risk level', plan['stop']), ('Current', cur),
-                ('First review', plan['target_1']), ('Stretch', plan['target_2']),
-            ]
+            if option_type == 'call':
+                price_scenarios = [
+                    ('Falls to the risk level', plan['stop']),
+                    ('Stays near today', cur),
+                    ('Reaches the first upside level', plan['target_1']),
+                    ('Reaches the stretch level', plan['target_2']),
+                ]
+            else:
+                price_scenarios = [
+                    ('Falls to the lower reference', plan['stop']),
+                    ('Falls about 10%', cur * .90),
+                    ('Stays near today', cur),
+                    ('Rises about 5%', cur * 1.05),
+                ]
             iv_scenarios = [('IV −20%', .80), ('IV unchanged', 1.00), ('IV +20%', 1.20)]
             scenario_rows = []
             for price_label, future_spot in price_scenarios:
@@ -1416,26 +1485,41 @@ with tab_options:
                 )
                 for label, price, values in scenario_rows
             )
+            simple_rows = ''.join(
+                '<div class="detail-row"><span>{} · stock ${:,.0f}</span><b>{:+,.0f}</b></div>'.format(
+                    label, price, values[1]
+                )
+                for label, price, values in scenario_rows
+            )
             st.markdown(f"""
-            <div class="eyebrow" style="margin:16px 3px 7px;">THEORETICAL P/L AFTER {scenario_days} DAYS · 1 CONTRACT</div>
-            <div class="mobile-card" style="padding:6px 8px;overflow-x:auto;">
-              <table class="option-table">
-                <thead><tr><th>Stock case</th><th>Price</th><th>IV −20%</th><th>Same IV</th><th>IV +20%</th></tr></thead>
-                <tbody>{table_rows}</tbody>
-              </table>
+            <div class="eyebrow" style="margin:16px 3px 7px;">WHAT-IF ESTIMATE AFTER {scenario_days} DAYS · 1 CONTRACT</div>
+            <div class="detail-card">
+              {simple_rows}
             </div>
-            <div class="mobile-note">Scenario values are theoretical estimates, not executable quotes. Actual P/L can differ because of spreads, early exercise, assignment, dividends, rate changes, volatility skew and market gaps.</div>
+            <div class="mobile-note">Positive numbers mean an estimated gain; negative numbers mean an estimated loss. These estimates assume volatility stays about the same and are not executable prices.</div>
             """, unsafe_allow_html=True)
 
-            with st.expander("How to read Options Lab", expanded=False):
+            with st.expander("Advanced what-if table · volatility changes", expanded=False):
+                st.markdown(f"""
+                <div class="mobile-card" style="padding:6px 8px;overflow-x:auto;">
+                  <table class="option-table">
+                    <thead><tr><th>Stock case</th><th>Price</th><th>Volatility lower</th><th>About same</th><th>Volatility higher</th></tr></thead>
+                    <tbody>{table_rows}</tbody>
+                  </table>
+                </div>
+                <div class="mobile-note">Option prices can change even when the stock price does not. Higher volatility often raises option value; lower volatility often reduces it.</div>
+                """, unsafe_allow_html=True)
+
+            with st.expander("New investor help", expanded=False):
                 st.markdown("""
-**Contract Quality** evaluates quote spread, activity, open interest, time coverage and directional exposure. It is not the probability of profit.
+**Call:** a position used when you think the stock may rise.  
+**Put:** a position used when you think the stock may fall.  
+**Strike:** the contract's reference price. It is not what you pay.  
+**Expiration:** the date the option ends. It can expire worthless.  
+**Break-even:** the stock price needed at expiration to recover the amount paid, before fees.  
+**Spread:** combines two options to reduce cost, while also limiting profit.
 
-**Delta** estimates directional sensitivity. **Gamma** shows how quickly Delta may change. **Theta** estimates daily time decay. **Vega** estimates sensitivity to a one-point change in implied volatility.
-
-**IV-implied range** describes a volatility-based magnitude, not market direction.
-
-**Debit spreads** cap both maximum loss and maximum profit. Long options cap loss at the premium but can still expire worthless.
+Start with **what you pay** and **maximum loss**. If losing the entire amount would be unacceptable, the position is too large. The score on this page checks quote quality—not whether the trade will win.
                 """)
         except Exception as exc:
             st.error("Option-chain data is unavailable right now. The stock research pages still work normally.")
