@@ -10,7 +10,8 @@ import html
 import io
 import json
 import math
-from datetime import date
+import os
+from datetime import date, datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import streamlit as st
@@ -19,6 +20,7 @@ import pandas as pd
 import numpy as np
 from textblob import TextBlob
 import plotly.graph_objects as go
+import requests
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -552,16 +554,108 @@ def option_model(spot: float, strike: float, years: float, rate: float,
             'theta': theta_year / 365, 'vega': vega}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_option_expirations(ticker: str) -> list[str]:
-    return list(yf.Ticker(ticker).options)
+def alpaca_credentials() -> tuple[str, str]:
+    """Read Alpaca credentials from Streamlit secrets or environment variables."""
+    try:
+        key = st.secrets.get('ALPACA_API_KEY', '')
+        secret = st.secrets.get('ALPACA_SECRET_KEY', '')
+    except Exception:
+        key, secret = '', ''
+    key = key or os.getenv('ALPACA_API_KEY', '')
+    secret = secret or os.getenv('ALPACA_SECRET_KEY', '')
+    if not key or not secret:
+        raise RuntimeError('Alpaca credentials are missing. Add ALPACA_API_KEY and ALPACA_SECRET_KEY to Streamlit Secrets.')
+    return key, secret
+
+
+def alpaca_request(url: str, params: dict | None = None) -> dict:
+    key, secret = alpaca_credentials()
+    response = requests.get(url, params=params, headers={
+        'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret,
+        'Accept': 'application/json',
+    }, timeout=15)
+    if response.status_code in (401, 403):
+        raise RuntimeError('Alpaca rejected the credentials or this feed is not included in the account plan.')
+    response.raise_for_status()
+    return response.json()
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def alpaca_option_contracts(ticker: str, option_type: str) -> pd.DataFrame:
+    rows, token = [], None
+    while True:
+        params = {'underlying_symbols': ticker, 'status': 'active', 'type': option_type,
+                  'limit': 10000}
+        if token:
+            params['page_token'] = token
+        payload = alpaca_request('https://paper-api.alpaca.markets/v2/options/contracts', params)
+        rows.extend(payload.get('option_contracts', []))
+        token = payload.get('next_page_token')
+        if not token:
+            break
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    frame['expiration_date'] = pd.to_datetime(frame['expiration_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+    frame['strike_price'] = pd.to_numeric(frame['strike_price'], errors='coerce')
+    return frame.dropna(subset=['expiration_date', 'strike_price'])
+
+
+def fetch_option_expirations(ticker: str, option_type: str | None = None) -> list[str]:
+    types = [option_type] if option_type else ['call', 'put']
+    expirations = set()
+    for contract_type in types:
+        contracts = alpaca_option_contracts(ticker, contract_type)
+        expirations.update(contracts['expiration_date'].dropna().unique().tolist())
+    return sorted(expirations)
+
+
+@st.cache_data(ttl=5, show_spinner=False)
 def fetch_option_chain(ticker: str, expiration: str, option_type: str) -> pd.DataFrame:
-    chain = yf.Ticker(ticker).option_chain(expiration)
-    frame = chain.calls if option_type == 'call' else chain.puts
-    return frame.copy()
+    contracts = alpaca_option_contracts(ticker, option_type)
+    contracts = contracts.loc[contracts['expiration_date'].eq(expiration)].copy()
+    if contracts.empty:
+        return contracts
+    feed = os.getenv('ALPACA_OPTIONS_FEED', 'opra').lower()
+    if feed not in {'opra', 'indicative'}:
+        raise RuntimeError('ALPACA_OPTIONS_FEED must be opra or indicative.')
+    symbols = contracts['symbol'].astype(str).tolist()
+    snapshots = {}
+    # Multi-symbol snapshots are limited to 100 symbols per request.
+    for offset in range(0, len(symbols), 100):
+        params = {'feed': feed, 'symbols': ','.join(symbols[offset:offset + 100])}
+        payload = alpaca_request('https://data.alpaca.markets/v1beta1/options/snapshots', params)
+        snapshots.update(payload.get('snapshots', {}))
+    records = []
+    for contract in contracts.itertuples(index=False):
+        snap = snapshots.get(str(contract.symbol), {})
+        quote = snap.get('latestQuote') or {}
+        trade = snap.get('latestTrade') or {}
+        greeks = snap.get('greeks') or {}
+        records.append({
+            'contractSymbol': str(contract.symbol), 'strike': contract.strike_price,
+            'bid': quote.get('bp'), 'ask': quote.get('ap'), 'bidSize': quote.get('bs'),
+            'askSize': quote.get('as'), 'quoteTimestamp': quote.get('t'),
+            'lastPrice': (trade.get('p') if trade else None), 'tradeTimestamp': trade.get('t'),
+            'volume': getattr(contract, 'volume', 0) or 0,
+            'openInterest': getattr(contract, 'open_interest', 0) or 0,
+            'impliedVolatility': greeks.get('iv'), 'delta': greeks.get('delta'),
+            'gamma': greeks.get('gamma'), 'theta': greeks.get('theta'),
+            'vega': greeks.get('vega'), 'dataFeed': feed,
+        })
+    return pd.DataFrame(records)
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_alpaca_stock_quote(ticker: str) -> tuple[float, datetime]:
+    payload = alpaca_request(
+        f'https://data.alpaca.markets/v2/stocks/{ticker}/quotes/latest', {'feed': 'sip'})
+    quote = payload.get('quote') or {}
+    bid, ask = finite(quote.get('bp'), np.nan), finite(quote.get('ap'), np.nan)
+    stamp = pd.to_datetime(quote.get('t'), utc=True, errors='coerce')
+    if not np.isfinite(bid) or not np.isfinite(ask) or bid <= 0 or ask < bid or pd.isna(stamp):
+        raise RuntimeError('Alpaca did not return a valid two-sided SIP stock quote.')
+    return (bid + ask) / 2, stamp.to_pydatetime()
 
 
 def enrich_option_chain(frame: pd.DataFrame, spot: float, days: int,
@@ -574,11 +668,8 @@ def enrich_option_chain(frame: pd.DataFrame, spot: float, days: int,
     work['volume'] = work['volume'].fillna(0)
     work['openInterest'] = work['openInterest'].fillna(0)
     valid_quote = (work['bid'] > 0) & (work['ask'] >= work['bid'])
-    work['mid'] = np.where(
-        valid_quote,
-        (work['bid'] + work['ask']) / 2,
-        work['lastPrice'],
-    )
+    # A last trade is not an executable two-sided quote; never use it as a premium fallback.
+    work['mid'] = np.where(valid_quote, (work['bid'] + work['ask']) / 2, np.nan)
     work['spreadPct'] = np.where(
         valid_quote & (work['mid'] > 0),
         (work['ask'] - work['bid']) / work['mid'] * 100, np.nan
@@ -1273,13 +1364,17 @@ with tab_options:
             dte = max(0, int((expiration_date - today).days))
             dividend = min(max(finite(info.get('dividendYield')), 0), .20)
             rate = .04
+            # Use Alpaca SIP for the underlying and the same provider's option feed.
+            option_spot, stock_quote_time = fetch_alpaca_stock_quote(ticker)
+            cur = option_spot
             chain = fetch_option_chain(ticker, expiration, option_type)
             chain = enrich_option_chain(
                 chain, cur, dte, rate, dividend, option_type,
                 max(risk['vol60'] / 100, .10),
             )
             chain['dte'] = dte
-            chain = chain.loc[(chain['mid'] > 0) & chain['strike'].between(cur * .65, cur * 1.35)].copy()
+            chain = chain.loc[(chain['bid'] > 0) & (chain['ask'] >= chain['bid']) &
+                              chain['strike'].between(cur * .65, cur * 1.35)].copy()
             if chain.empty:
                 raise ValueError('No usable contracts with valid prices were returned for this expiration.')
             chain['rank'] = (abs(chain['strike'] / cur - 1) +
@@ -1292,13 +1387,16 @@ with tab_options:
                 "4. Choose a strike price", contracts,
                 format_func=lambda symbol: (
                     f"Strike ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
-                    f"about ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} per contract"
+                    f"mid ref ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} · "
+                    f"Ask cost ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'ask'].iloc[0]) * 100:,.0f}"
                 ),
                 key=f'option_contract_{ticker}_{expiration}_{option_type}',
             )
             long_row = chain.loc[chain['contractSymbol'].eq(selected_symbol)].iloc[0]
             long_strike = finite(long_row['strike'])
             long_mid = finite(long_row['mid'])
+            long_ask = finite(long_row['ask'], np.nan)
+            long_bid = finite(long_row['bid'], np.nan)
             short_row = None
 
             if 'Spread' in strategy:
@@ -1318,7 +1416,8 @@ with tab_options:
                         "Second strike", short_symbols, index=default_short,
                         format_func=lambda symbol: (
                             f"${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
-                            f"market value about ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f}"
+                            f"mid ref ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} · "
+                            f"Bid credit ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'bid'].iloc[0]) * 100:,.0f}"
                         ),
                         key=f'option_short_{ticker}_{expiration}_{option_type}',
                     )
@@ -1336,10 +1435,34 @@ with tab_options:
                 quality_label = long_label
 
             short_mid = finite(short_row['mid']) if short_row is not None else 0.0
+            short_bid = finite(short_row['bid'], np.nan) if short_row is not None else 0.0
+            short_ask = finite(short_row['ask'], np.nan) if short_row is not None else 0.0
             short_strike = finite(short_row['strike']) if short_row is not None else 0.0
-            debit = long_mid - short_mid
-            if debit <= 0:
+            fair_debit = long_mid - short_mid
+            debit = long_ask - short_bid
+            if not np.isfinite(debit) or long_bid <= 0 or (short_row is not None and
+                                                             (not np.isfinite(short_bid) or short_bid <= 0)):
+                raise ValueError('A valid, positive bid and ask is required for every leg. No cost estimate is shown.')
+            if debit <= 0 or fair_debit <= 0:
                 raise ValueError('The selected quote does not produce a positive debit. Try another contract.')
+            quote_times = [pd.to_datetime(long_row['quoteTimestamp'], utc=True, errors='coerce')]
+            if short_row is not None:
+                quote_times.append(pd.to_datetime(short_row['quoteTimestamp'], utc=True, errors='coerce'))
+            if any(pd.isna(stamp) for stamp in quote_times):
+                raise ValueError('An option quote timestamp is missing. No cost estimate is shown.')
+            option_quote_time = min(stamp.to_pydatetime() for stamp in quote_times)
+            quote_age = (datetime.now(timezone.utc) - option_quote_time).total_seconds()
+            stock_age = (datetime.now(timezone.utc) - stock_quote_time).total_seconds()
+            if max(quote_age, stock_age) > 120:
+                new_york_now = pd.Timestamp.now(tz='America/New_York')
+                market_open = (new_york_now.weekday() < 5 and
+                               (new_york_now.hour, new_york_now.minute) >= (9, 30) and
+                               (new_york_now.hour, new_york_now.minute) < (16, 0))
+                if not market_open:
+                    raise ValueError('Previous market close: the market is outside regular hours. No current purchase-cost estimate is shown.')
+                raise ValueError('Stale quote: the stock or option quote is older than 2 minutes. Refresh before using any estimate.')
+            if finite(long_row['spreadPct'], 999) > 20 or (short_row is not None and finite(short_row['spreadPct'], 999) > 20):
+                st.warning('Wide spread: this quote may be difficult or costly to trade. Estimated cost uses the displayed bid and ask.')
             if option_type == 'call':
                 breakeven = long_strike + debit
                 width = short_strike - long_strike if short_row is not None else np.nan
@@ -1368,6 +1491,7 @@ with tab_options:
             score_notes = ' · '.join(quality_notes)
             max_profit_text = 'Not capped' if np.isinf(max_profit) else f'${max_profit:,.0f}'
             expiration_pretty = expiration_date.strftime('%b %d, %Y')
+            cost_unit_label = 'per spread' if short_row is not None else 'per contract'
             move_to_breakeven = (breakeven / cur - 1) * 100
             if option_type == 'call':
                 profit_condition = f'above ${breakeven:,.2f}'
@@ -1394,6 +1518,14 @@ with tab_options:
               <div class="stat-cell"><div class="stat-label">Most you can lose</div><div class="stat-value">${max_loss:,.0f}</div></div>
               <div class="stat-cell"><div class="stat-label">Most you can make</div><div class="stat-value">{max_profit_text}</div></div>
             </div>
+            <div class="detail-card">
+              <div class="detail-row"><span>Fair-value estimate · midpoint</span><b>${fair_debit * 100:,.0f} {cost_unit_label}</b></div>
+              <div class="detail-row"><span>Conservative purchase cost · Ask / Bid</span><b>${debit * 100:,.0f} {cost_unit_label}</b></div>
+              <div class="detail-row"><span>Long option · Bid / Ask</span><b>${long_bid:.2f} / ${long_ask:.2f}</b></div>
+              <div class="detail-row"><span>Last updated · option quote</span><b>{option_quote_time.astimezone().strftime('%I:%M:%S %p %Z')}</b></div>
+              <div class="detail-row"><span>Last updated · stock SIP quote</span><b>{stock_quote_time.astimezone().strftime('%I:%M:%S %p %Z')}</b></div>
+              <div class="detail-row"><span>Data source</span><b>Alpaca {str(long_row.get('dataFeed', 'OPRA')).upper()} · stock SIP</b></div>
+            </div>
             <div class="mobile-card">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
                 <div><div class="eyebrow">QUOTE &amp; LIQUIDITY CHECK</div><div class="value">{quality_label} · {quality_score}/100</div></div>
@@ -1404,6 +1536,13 @@ with tab_options:
             </div>
             """, unsafe_allow_html=True)
 
+            risk_budget = st.number_input('Risk budget for this idea ($)', min_value=0.0,
+                                          value=1000.0, step=100.0,
+                                          key=f'option_risk_budget_{ticker}_{selected_symbol}')
+            unit_cost = debit * 100
+            max_contracts = int(risk_budget // unit_cost) if unit_cost > 0 else 0
+            st.caption(f"Risk budget ${risk_budget:,.0f} · cost at current Ask/Bid ${unit_cost:,.0f} · maximum contracts {max_contracts:,}")
+
             if quality_score < 45:
                 st.warning("This quote has weak liquidity or an unusually wide spread. The displayed cost may be hard to obtain in the market.")
 
@@ -1411,7 +1550,9 @@ with tab_options:
                 st.markdown(f"""
                 <div class="detail-card">
                   <div class="detail-row"><span>Expiration</span><b>{expiration_pretty} · {dte} days</b></div>
-                  <div class="detail-row"><span>Bid / ask</span><b>${finite(long_row['bid']):.2f} / ${finite(long_row['ask']):.2f}</b></div>
+                  <div class="detail-row"><span>Bid / ask</span><b>${long_bid:.2f} / ${long_ask:.2f}</b></div>
+                  {f'<div class="detail-row"><span>Short leg bid / ask</span><b>${short_bid:.2f} / ${short_ask:.2f}</b></div>' if short_row is not None else ''}
+                  <div class="detail-row"><span>Quote age</span><b>{max(0, int(quote_age))} sec · {('Stale' if quote_age > 120 else 'Current')}</b></div>
                   <div class="detail-row"><span>Cost between bid and ask</span><b>{spread_display}</b></div>
                   <div class="detail-row"><span>Contracts traded / open</span><b>{finite(long_row['volume']):,.0f} / {finite(long_row['openInterest']):,.0f}</b></div>
                   <div class="detail-row"><span>{iv_label}</span><b>{iv*100:.1f}%</b></div>

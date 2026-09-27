@@ -1,6 +1,6 @@
 # Investor Research + Options Lab
 
-A mobile-first Streamlit tracker for stock and ETF research. The beginner-friendly Options Lab leads with plain-English cost, break-even, maximum loss and what-if answers. Quote checks, modeled Greeks, and volatility scenarios remain available under optional advanced sections.
+A mobile-first Streamlit stock research app. Historical charts, indicators and news continue to use Yahoo Finance; the Options Lab uses Alpaca for both the underlying stock quote (SIP) and US option quotes (OPRA by default). The app does not place orders.
 
 ## Run locally
 
@@ -9,12 +9,18 @@ python -m pip install -r requirements.txt
 streamlit run stock_app.py
 ```
 
-## Deploy on Streamlit Community Cloud
+Configure credentials in `.streamlit/secrets.toml` (keep this file out of Git):
 
-1. Put `stock_app.py` and `requirements.txt` in the root of a public GitHub repository.
-2. Select the repository and `main` branch in Streamlit Community Cloud.
-3. Set **Main file path** to `stock_app.py` and deploy.
+```toml
+ALPACA_API_KEY = "your-key"
+ALPACA_SECRET_KEY = "your-secret"
+ALPACA_OPTIONS_FEED = "opra"
+```
 
-Option-chain data is requested only when the user presses **Start an options scenario**. Quotes may be delayed, incomplete, stale, or unavailable. When implied volatility is absent, scenario calculations are explicitly labeled and use recent realized volatility as an estimate.
+The free Alpaca options feed is `indicative`, not OPRA. To use it for research, set `ALPACA_OPTIONS_FEED = "indicative"`; the app labels the source. OPRA access depends on the Alpaca subscription and entitlement. Do not commit credentials. Streamlit Community Cloud credentials belong in **App settings → Secrets**.
 
-This app is for research and education. It does not connect to a broker, submit orders, predict future prices, or provide personalized investment advice.
+The Options Lab loads Alpaca option contracts and snapshots on demand. Long option cost uses Ask; a spread uses long Ask minus short Bid. It also shows midpoint reference cost, quote timestamps, and a risk-budget contract estimate. Missing two-sided quotes, zero bids, invalid debits, or stock/option quotes older than two minutes block the cost estimate. Spreads wider than 20% are flagged. Market quotes can change before an order reaches a venue; verify them at your broker and use limit orders.
+
+The app does not continuously maintain an options WebSocket connection; quotes are fetched as snapshots when the scenario renders and refresh with Streamlit reruns. Historical chart prices remain Yahoo sourced and are not used as the Options Lab's current underlying price.
+
+This app is for research and education. Prices are not guaranteed execution prices and the app does not provide personalized investment advice.
