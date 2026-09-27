@@ -568,14 +568,25 @@ def alpaca_credentials() -> tuple[str, str]:
     return key, secret
 
 
+def app_setting(name: str, default: str) -> str:
+    """Read an app setting from Streamlit Cloud Secrets, then local environment."""
+    try:
+        value = st.secrets.get(name, '')
+    except Exception:
+        value = ''
+    return str(value or os.getenv(name, default)).strip()
+
+
 def alpaca_request(url: str, params: dict | None = None) -> dict:
     key, secret = alpaca_credentials()
     response = requests.get(url, params=params, headers={
         'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret,
         'Accept': 'application/json',
     }, timeout=15)
-    if response.status_code in (401, 403):
-        raise RuntimeError('Alpaca rejected the credentials or this feed is not included in the account plan.')
+    if response.status_code == 401:
+        raise RuntimeError('Alpaca returned HTTP 401: the API key and secret are invalid or do not belong to the same account/environment. Replace both with a matching active key pair.')
+    if response.status_code == 403:
+        raise RuntimeError('Alpaca returned HTTP 403: credentials were accepted, but this market-data feed is not enabled for the account. Check the requested feed and subscription plan.')
     response.raise_for_status()
     return response.json()
 
@@ -616,7 +627,7 @@ def fetch_option_chain(ticker: str, expiration: str, option_type: str) -> pd.Dat
     contracts = contracts.loc[contracts['expiration_date'].eq(expiration)].copy()
     if contracts.empty:
         return contracts
-    feed = os.getenv('ALPACA_OPTIONS_FEED', 'opra').lower()
+    feed = app_setting('ALPACA_OPTIONS_FEED', 'opra').lower()
     if feed not in {'opra', 'indicative'}:
         raise RuntimeError('ALPACA_OPTIONS_FEED must be opra or indicative.')
     symbols = contracts['symbol'].astype(str).tolist()
@@ -647,9 +658,9 @@ def fetch_option_chain(ticker: str, expiration: str, option_type: str) -> pd.Dat
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_alpaca_stock_quote(ticker: str) -> tuple[float, datetime]:
+def fetch_alpaca_stock_quote(ticker: str, feed: str) -> tuple[float, datetime]:
     payload = alpaca_request(
-        f'https://data.alpaca.markets/v2/stocks/{ticker}/quotes/latest', {'feed': 'sip'})
+        f'https://data.alpaca.markets/v2/stocks/{ticker}/quotes/latest', {'feed': feed})
     quote = payload.get('quote') or {}
     bid, ask = finite(quote.get('bp'), np.nan), finite(quote.get('ap'), np.nan)
     stamp = pd.to_datetime(quote.get('t'), utc=True, errors='coerce')
@@ -1365,7 +1376,10 @@ with tab_options:
             dividend = min(max(finite(info.get('dividendYield')), 0), .20)
             rate = .04
             # Use Alpaca SIP for the underlying and the same provider's option feed.
-            option_spot, stock_quote_time = fetch_alpaca_stock_quote(ticker)
+            stock_feed = app_setting('ALPACA_STOCK_FEED', 'sip').lower()
+            if stock_feed not in {'sip', 'iex'}:
+                raise RuntimeError('ALPACA_STOCK_FEED must be sip or iex.')
+            option_spot, stock_quote_time = fetch_alpaca_stock_quote(ticker, stock_feed)
             cur = option_spot
             chain = fetch_option_chain(ticker, expiration, option_type)
             chain = enrich_option_chain(
@@ -1524,7 +1538,7 @@ with tab_options:
               <div class="detail-row"><span>Long option · Bid / Ask</span><b>${long_bid:.2f} / ${long_ask:.2f}</b></div>
               <div class="detail-row"><span>Last updated · option quote</span><b>{option_quote_time.astimezone().strftime('%I:%M:%S %p %Z')}</b></div>
               <div class="detail-row"><span>Last updated · stock SIP quote</span><b>{stock_quote_time.astimezone().strftime('%I:%M:%S %p %Z')}</b></div>
-              <div class="detail-row"><span>Data source</span><b>Alpaca {str(long_row.get('dataFeed', 'OPRA')).upper()} · stock SIP</b></div>
+              <div class="detail-row"><span>Data source</span><b>Alpaca {str(long_row.get('dataFeed', 'OPRA')).upper()} · stock {stock_feed.upper()}</b></div>
             </div>
             <div class="mobile-card">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
