@@ -672,7 +672,9 @@ def fetch_option_chain(ticker: str, expiration: str, option_type: str) -> pd.Dat
             'lastPrice': (trade.get('p') if trade else None), 'tradeTimestamp': trade.get('t'),
             'volume': getattr(contract, 'volume', 0) or 0,
             'openInterest': getattr(contract, 'open_interest', 0) or 0,
-            'impliedVolatility': greeks.get('iv'), 'delta': greeks.get('delta'),
+            # Alpaca exposes IV as a top-level snapshot field; Greeks are a separate object.
+            'impliedVolatility': snap.get('impliedVolatility', snap.get('implied_volatility')),
+            'delta': greeks.get('delta'),
             'gamma': greeks.get('gamma'), 'theta': greeks.get('theta'),
             'vega': greeks.get('vega'), 'dataFeed': feed,
         })
