@@ -346,6 +346,19 @@ div[data-testid="stExpander"] { background:rgba(255,255,255,.86); border:1px sol
 div[data-testid="stMetric"] { background:#ececef; border-radius:13px; padding:10px; }
 label, .stMarkdown, [data-testid="stCaptionContainer"] { color:#34343d; }
 
+/* Compact type scale: Streamlit's default headings and metrics are too large here. */
+.block-container h1 { font-size:23px !important; line-height:1.25 !important; }
+.block-container h2 { font-size:19px !important; line-height:1.3 !important; margin-top:14px !important; }
+.block-container h3 { font-size:16px !important; line-height:1.35 !important; }
+.block-container p, .block-container li { font-size:13px; line-height:1.5; }
+.block-container label, .block-container [data-testid="stCaptionContainer"] { font-size:12px !important; line-height:1.45 !important; }
+[data-testid="stMetricLabel"] { font-size:11px !important; line-height:1.3 !important; }
+[data-testid="stMetricValue"] { font-size:22px !important; line-height:1.2 !important; }
+[data-testid="stMetricValue"] div { font-size:22px !important; }
+[data-testid="stAlert"] p { font-size:13px !important; line-height:1.45 !important; }
+div[data-testid="stSelectbox"] div, div[data-testid="stNumberInput"] input { font-size:14px !important; }
+div[data-testid="stExpander"] summary { font-size:13px !important; }
+
 @media (max-width: 560px) {
     .stApp { background:#f8f8f5; }
     .block-container { margin:0; border:0; border-radius:0; box-shadow:none; max-width:100% !important; min-height:100vh; padding-bottom:calc(34px + env(safe-area-inset-bottom)) !important; }
@@ -1380,20 +1393,20 @@ with tab_options:
                 if np.isfinite(expiry_iv) and expiry_iv > 0:
                     expected_move = spot * expiry_iv * math.sqrt(max(dte, 1) / 365)
 
-            st.subheader("1 · How much movement is priced in?")
+            st.subheader("1 · Expected movement")
             st.caption("Past movement looks backward. The option estimate looks to this expiration. Neither predicts up or down.")
             vol_cols = st.columns(2)
             with vol_cols[0]:
-                st.metric("Recent volatility · past 20 days", f"{risk['vol20']:.1f}%", help="Annualized measure of how much the stock has moved recently.")
+                st.metric("Recent volatility · 20 days", f"{risk['vol20']:.1f}%", help="Annualized measure of how much the stock has moved recently.")
             with vol_cols[1]:
                 move_label = (f"±${expected_move:.2f} · about ±{expected_move / spot * 100:.1f}%"
-                              if np.isfinite(expected_move) and spot > 0 else "Unavailable")
-                st.metric("Approx. market-priced move by expiration", move_label,
+                              if np.isfinite(expected_move) and spot > 0 else "—")
+                st.metric("Expected move · to expiry", move_label,
                           help="A rough size-of-move estimate based on option implied volatility. It gives no direction and is not a forecast.")
-            st.caption("A rough range only—not a forecast or guarantee.")
+            st.caption("Approximate range, not a direction or guarantee.")
 
             if observed_iv.empty:
-                st.info("Option implied volatility is unavailable for this expiration, so the market-priced move cannot be shown reliably.")
+                st.info("No reliable option implied volatility was returned for this expiration. Try another expiration or check the options data access in your Alpaca plan.")
 
             latest_quote = pd.to_datetime(chain['quoteTimestamp'], utc=True, errors='coerce').max()
             quote_status = "Quote time unavailable"
@@ -1415,20 +1428,18 @@ with tab_options:
                     research_note = "Option-implied and recent realized volatility are in a similar range. They measure different periods and neither tells us which way the stock may move."
             else:
                 research_note = "There is not enough reliable implied-volatility data for a comparison. Use the recent movement figure as historical context only."
-            with st.container(border=True):
-                st.markdown("**What this tells you**")
-                st.write(research_note)
-                st.caption("Automated from the displayed data; it is not an AI forecast or a buy/sell recommendation.")
+            st.markdown(f"**Volatility read:** {research_note}")
+            st.caption("Automated from the displayed data—not an AI forecast or a buy/sell recommendation.")
 
             st.divider()
-            st.subheader("2 · What could this call or put cost?")
-            st.caption("Choose a listed strike and enter your own possible stock price at expiration.")
+            st.subheader("2 · Estimate cost & outcome")
+            st.caption("Choose a Call or Put strike, then test a possible stock price at expiry.")
             available_strikes = sorted(chain['strike'].dropna().astype(float).unique().tolist())
             default_strike = float(min(available_strikes, key=lambda value: abs(value - spot)))
             strike_col, target_col = st.columns(2)
             with strike_col:
                 selected_strike = st.selectbox(
-                    "Strike price", available_strikes,
+                    "Strike", available_strikes,
                     index=available_strikes.index(default_strike),
                     format_func=lambda value: f"${value:.2f}",
                     key=f'study_strike_{ticker}_{expiration}_{option_type}',
@@ -1445,14 +1456,14 @@ with tab_options:
             quotes_fresh = max(option_age, stock_age) <= 120
             with target_col:
                 target_price = st.number_input(
-                    "Your stock price at expiration ($)", min_value=0.0,
+                    "Stock price at expiry ($)", min_value=0.0,
                     value=float(spot), step=1.0,
                     key=f'hypothetical_price_{ticker}_{expiration}_{option_type}_{listed_strike}',
                     help="Try a few prices to compare possible outcomes. This is your assumption, not a forecast.",
                 )
 
             if not quotes_fresh:
-                st.warning("Previous market close: these quotes are stale, so no current purchase-cost or profit/loss estimate is shown. Refresh during market hours for a current quote.")
+                st.warning("Quote is from the previous market close. Current cost and profit/loss are hidden; refresh during market hours.")
             else:
                 entry_cost = ask * 100
                 fair_reference = ((bid + ask) / 2) * 100
