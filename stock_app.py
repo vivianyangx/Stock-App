@@ -599,8 +599,12 @@ def alpaca_request(url: str, params: dict | None = None) -> dict:
 @st.cache_data(ttl=300, show_spinner=False)
 def alpaca_option_contracts(ticker: str, option_type: str) -> pd.DataFrame:
     rows, token = [], None
+    today = pd.Timestamp.now(tz='America/New_York').date()
+    through = (pd.Timestamp(today) + pd.Timedelta(days=365)).date()
     while True:
         params = {'underlying_symbols': ticker, 'status': 'active', 'type': option_type,
+                  'expiration_date_gte': today.isoformat(),
+                  'expiration_date_lte': through.isoformat(),
                   'limit': 10000}
         if token:
             params['page_token'] = token
@@ -1099,7 +1103,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 tab_overview, tab_signals, tab_risk, tab_options, tab_research = st.tabs([
-    "Overview", "Signals", "Risk", "Options", "Research"
+    "Overview", "Signals", "Risk", "Volatility", "Research"
 ])
 
 with tab_signals:
@@ -1303,30 +1307,30 @@ with tab_options:
     }[horizon]
     st.markdown(f"""
     <div class="option-hero">
-      <div class="eyebrow">OPTIONS LAB · BEGINNER MODE</div>
-      <div class="option-hero-value">What could I gain or lose?</div>
-      <div class="option-hero-copy">This page does not predict whether {safe_ticker} will rise or fall. It helps you test an idea and understand the cost, break-even price and worst case before taking any action.</div>
+      <div class="eyebrow">VOLATILITY RESEARCH · NO TRADING</div>
+      <div class="option-hero-value">Understand what the market is pricing in</div>
+      <div class="option-hero-copy">Explore how much {safe_ticker} has moved, what option prices imply about future movement, and how that changes by strike and expiration. This tool is for research only and cannot place orders.</div>
     </div>
     <div class="guide-steps">
-      <div class="guide-step"><div class="guide-number">1</div><div><div class="guide-title">Start with your opinion</div><div class="guide-copy">Use the Price and Trend pages first, then choose whether you think the stock may rise or fall.</div></div></div>
-      <div class="guide-step"><div class="guide-number">2</div><div><div class="guide-title">Choose how much time you want</div><div class="guide-copy">More time normally costs more. Very short expirations lose value faster.</div></div></div>
-      <div class="guide-step"><div class="guide-number">3</div><div><div class="guide-title">Read the four answers</div><div class="guide-copy">Focus on pay today, break-even price, maximum loss and maximum profit. Everything technical is optional.</div></div></div>
+      <div class="guide-step"><div class="guide-number">1</div><div><div class="guide-title">Compare past and market-implied movement</div><div class="guide-copy">Realized volatility describes recent price changes. Implied volatility comes from current option prices.</div></div></div>
+      <div class="guide-step"><div class="guide-number">2</div><div><div class="guide-title">Explore a time period and option side</div><div class="guide-copy">Choose an expiration and compare calls or puts. This is a research filter, not a trade instruction.</div></div></div>
+      <div class="guide-step"><div class="guide-number">3</div><div><div class="guide-title">Check the data before drawing conclusions</div><div class="guide-copy">Review quote time, spread and missing values. If IV is unavailable, the app will say so.</div></div></div>
     </div>
     """, unsafe_allow_html=True)
 
     option_session_key = f'options_loaded_{ticker}'
-    if st.button("Start an options scenario", key=f'load_options_{ticker}',
+    if st.button("Explore volatility", key=f'load_options_{ticker}',
                  type="primary", width="stretch"):
         st.session_state[option_session_key] = True
 
     if not st.session_state.get(option_session_key, False):
         st.markdown("""
         <div class="detail-card">
-          <div class="detail-row"><span>You will choose</span><b>Direction · Time · Risk style</b></div>
-          <div class="detail-row"><span>You will learn</span><b>Cost · Break-even · Max loss</b></div>
-          <div class="detail-row"><span>Trading</span><b>None — research only</b></div>
+          <div class="detail-row"><span>Study</span><b>Past movement · implied volatility · strike pattern</b></div>
+          <div class="detail-row"><span>Optional</span><b>Educational payoff examples</b></div>
+          <div class="detail-row"><span>Trading</span><b>Not connected · no orders</b></div>
         </div>
-        <div class="mobile-note">Quotes are loaded only when requested and may be delayed. Starting the scenario does not buy or sell anything.</div>
+        <div class="mobile-note">Quotes load only when requested. Nothing on this page buys, sells, or sends an order.</div>
         """, unsafe_allow_html=True)
     else:
         try:
@@ -1334,7 +1338,7 @@ with tab_options:
             if not expirations:
                 raise ValueError('No listed option expirations were returned for this symbol.')
             expiration_dates = [pd.Timestamp(value) for value in expirations]
-            today = pd.Timestamp.now().normalize()
+            today = pd.Timestamp.now(tz='America/New_York').normalize().tz_localize(None)
             preferred = next(
                 (i for i, value in enumerate(expiration_dates)
                  if (value - today).days >= desired_days),
@@ -1344,38 +1348,38 @@ with tab_options:
             control_left, control_right = st.columns(2)
             with control_left:
                 view_choice = st.selectbox(
-                    "1. What do you think may happen?",
-                    ["Price may rise", "Price may fall"],
-                    index=0 if regime in ('Uptrend', 'Recovery') or chg_20d >= 0 else 1,
+                    "1. Which option side do you want to study?",
+                    ["Calls", "Puts"],
                     key=f'option_view_{ticker}',
                 )
-                option_view = 'Bullish' if view_choice == "Price may rise" else 'Bearish'
+                option_view = view_choice
             with control_right:
                 expiration = st.selectbox(
-                    "2. How much time do you want?", expirations, index=preferred,
-                    format_func=lambda value: (
-                        f"{pd.Timestamp(value).strftime('%b %d, %Y')} · "
-                        f"{max(0, (pd.Timestamp(value) - today).days)} days"
-                    ),
+                    "2. Which expiration do you want to study?", expirations, index=preferred,
+                    format_func=lambda value: (lambda days: (
+                        f"{pd.Timestamp(value).strftime('%b %d, %Y')} · {days} day" +
+                        ('' if days == 1 else 's') +
+                        (' · very short-term' if days <= 7 else '')
+                    ))(max(0, (pd.Timestamp(value) - today).days)),
                     key=f'option_expiration_{ticker}',
                 )
-            option_type = 'call' if option_view == 'Bullish' else 'put'
+            option_type = 'call' if option_view == 'Calls' else 'put'
             if option_type == 'call':
                 strategy_map = {
-                    "Buy a call · simpler, profit is not capped": "Long Call",
-                    "Call spread · lower cost, profit is capped": "Call Debit Spread",
+                    "Single-call payoff example · uncapped upside": "Long Call",
+                    "Call-spread payoff example · capped upside": "Call Debit Spread",
                 }
             else:
                 strategy_map = {
-                    "Buy a put · simpler, benefits from a decline": "Long Put",
-                    "Put spread · lower cost, profit is capped": "Put Debit Spread",
+                    "Single-put payoff example · benefits from a decline": "Long Put",
+                    "Put-spread payoff example · capped upside": "Put Debit Spread",
                 }
             strategy_choice = st.selectbox(
-                "3. How do you want to limit the risk?", list(strategy_map),
+                "Optional payoff example (research only)", list(strategy_map),
                 key=f'option_strategy_{ticker}_{option_type}',
             )
             strategy = strategy_map[strategy_choice]
-            st.caption("A spread normally costs less, but it also limits how much you can make.")
+            st.caption("This example estimates an option payoff. It does not place an order or tell you what to buy.")
             expiration_date = pd.Timestamp(expiration)
             dte = max(0, int((expiration_date - today).days))
             dividend = min(max(finite(info.get('dividendYield')), 0), .20)
@@ -1468,17 +1472,21 @@ with tab_options:
                              chain['spreadPct'].fillna(100).clip(0, 100) / 220 +
                              np.where(chain['openInterest'] >= 100, 0, .20))
             chain = chain.sort_values(['rank', 'strike'])
-            contracts = chain['contractSymbol'].astype(str).tolist()
-
-            selected_symbol = st.selectbox(
-                "4. Choose a strike price", contracts,
-                format_func=lambda symbol: (
-                    f"Strike ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
-                    f"mid ref ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} · "
-                    f"Ask cost ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'ask'].iloc[0]) * 100:,.0f}"
-                ),
-                key=f'option_contract_{ticker}_{expiration}_{option_type}',
+            available_strikes = sorted(chain['strike'].dropna().astype(float).unique().tolist())
+            default_strike = float(chain.iloc[0]['strike'])
+            requested_strike = st.number_input(
+                "3. Enter a strike price to study ($)",
+                min_value=float(available_strikes[0]),
+                max_value=float(available_strikes[-1]),
+                value=default_strike,
+                step=0.5,
+                key=f'study_strike_{ticker}_{expiration}_{option_type}',
+                help="Enter a listed strike in the range shown. If your value is not listed, the app uses the nearest available strike.",
             )
+            actual_strike = min(available_strikes, key=lambda strike: abs(strike - requested_strike))
+            if not np.isclose(actual_strike, requested_strike):
+                st.caption(f"Nearest listed contract: strike ${actual_strike:,.2f}. The entered strike is not listed for this expiration.")
+            selected_symbol = str(chain.loc[np.isclose(chain['strike'], actual_strike), 'contractSymbol'].iloc[0])
             long_row = chain.loc[chain['contractSymbol'].eq(selected_symbol)].iloc[0]
             long_strike = finite(long_row['strike'])
             long_mid = finite(long_row['mid'])
@@ -1563,6 +1571,29 @@ with tab_options:
             if short_row is not None and (width <= 0 or debit >= width):
                 raise ValueError('This spread quote has an invalid risk/reward width. Try another pair.')
 
+            st.markdown("#### Explore a price scenario")
+            st.caption("Enter a hypothetical stock price at expiration to see the option payoff calculation. This is not a forecast.")
+            hypothetical_price = st.number_input(
+                "What if the stock is at this price on expiration day?",
+                min_value=0.0, value=float(cur), step=1.0,
+                key=f'hypothetical_expiry_price_{ticker}_{expiration}_{selected_symbol}',
+            )
+            long_intrinsic = (max(hypothetical_price - long_strike, 0.0)
+                              if option_type == 'call'
+                              else max(long_strike - hypothetical_price, 0.0))
+            short_intrinsic = 0.0
+            if short_row is not None:
+                short_intrinsic = (max(hypothetical_price - short_strike, 0.0)
+                                   if option_type == 'call'
+                                   else max(short_strike - hypothetical_price, 0.0))
+            hypothetical_pnl = (long_intrinsic - short_intrinsic - debit) * 100
+            st.metric(
+                "Estimated payoff at expiration · 1 contract",
+                f"{hypothetical_pnl:+,.0f} USD",
+                help="Uses the option's value at expiration minus the current quote-based debit. Excludes fees and does not estimate what the option may be worth before expiration.",
+            )
+            st.caption("Research calculation only. It does not submit an order, predict the stock price, or include fees.")
+
             iv = max(finite(long_row['modelIV']), .01)
             iv_is_estimated = bool(long_row.get('ivEstimated', False))
             iv_label = ('Historical-volatility estimate' if iv_is_estimated else 'Implied volatility')
@@ -1600,14 +1631,14 @@ with tab_options:
               <span class="answer-chip red">Max loss ${max_loss:,.0f}</span>
             </div>
             <div class="stat-grid">
-              <div class="stat-cell"><div class="stat-label">You pay today · 1 contract</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Ask-based cost reference · 1 contract</div><div class="stat-value">${max_loss:,.0f}</div></div>
               <div class="stat-cell"><div class="stat-label">Needs to finish</div><div class="stat-value">{profit_condition}</div></div>
               <div class="stat-cell"><div class="stat-label">Most you can lose</div><div class="stat-value">${max_loss:,.0f}</div></div>
               <div class="stat-cell"><div class="stat-label">Most you can make</div><div class="stat-value">{max_profit_text}</div></div>
             </div>
             <div class="detail-card">
               <div class="detail-row"><span>Fair-value estimate · midpoint</span><b>${fair_debit * 100:,.0f} {cost_unit_label}</b></div>
-              <div class="detail-row"><span>Conservative purchase cost · Ask / Bid</span><b>${debit * 100:,.0f} {cost_unit_label}</b></div>
+              <div class="detail-row"><span>Ask-based cost estimate · Ask / Bid</span><b>${debit * 100:,.0f} {cost_unit_label}</b></div>
               <div class="detail-row"><span>Long option · Bid / Ask</span><b>${long_bid:.2f} / ${long_ask:.2f}</b></div>
               <div class="detail-row"><span>Last updated · option quote</span><b>{option_quote_time.astimezone().strftime('%I:%M:%S %p %Z')}</b></div>
               <div class="detail-row"><span>Last updated · stock SIP quote</span><b>{stock_quote_time.astimezone().strftime('%I:%M:%S %p %Z')}</b></div>
@@ -1623,12 +1654,12 @@ with tab_options:
             </div>
             """, unsafe_allow_html=True)
 
-            risk_budget = st.number_input('Risk budget for this idea ($)', min_value=0.0,
+            risk_budget = st.number_input('Optional example budget ($)', min_value=0.0,
                                           value=1000.0, step=100.0,
                                           key=f'option_risk_budget_{ticker}_{selected_symbol}')
             unit_cost = debit * 100
             max_contracts = int(risk_budget // unit_cost) if unit_cost > 0 else 0
-            st.caption(f"Risk budget ${risk_budget:,.0f} · cost at current Ask/Bid ${unit_cost:,.0f} · maximum contracts {max_contracts:,}")
+            st.caption(f"At the current quote, this budget could cover up to {max_contracts:,} example contract(s). This is a math reference, not a recommended position size.")
 
             if quality_score < 45:
                 st.warning("This quote has weak liquidity or an unusually wide spread. The displayed cost may be hard to obtain in the market.")
@@ -1740,14 +1771,13 @@ with tab_options:
 
             with st.expander("New investor help", expanded=False):
                 st.markdown("""
-**Call:** a position used when you think the stock may rise.  
-**Put:** a position used when you think the stock may fall.  
-**Strike:** the contract's reference price. It is not what you pay.  
-**Expiration:** the date the option ends. It can expire worthless.  
-**Break-even:** the stock price needed at expiration to recover the amount paid, before fees.  
-**Spread:** combines two options to reduce cost, while also limiting profit.
+**Call and put:** two kinds of option contracts. They let you compare how the market prices different outcomes; choosing one here does not mean you expect that direction.  
+**Strike:** the contract's reference price. Type a strike to study; if that exact strike is not listed, the nearest listed contract is used.  
+**Expiration:** the date the contract ends. The selected date sets the time period for the volatility view.  
+**Implied volatility (IV):** the movement level reflected in current option prices. It is not a forecast of direction.  
+**Payoff example:** a simple calculation at expiration using the current quote reference. It does not estimate what the contract could be worth before expiration or include fees.
 
-Start with **what you pay** and **maximum loss**. If losing the entire amount would be unacceptable, the position is too large. The score on this page checks quote quality—not whether the trade will win.
+This page is for research. It is not connected to a broker and cannot submit orders.
                 """)
         except Exception as exc:
             st.error("Option-chain data is unavailable right now. The stock research pages still work normally.")
