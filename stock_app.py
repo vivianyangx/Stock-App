@@ -1464,34 +1464,41 @@ with tab_options:
                     help="Try a few prices to compare possible outcomes. This is your assumption, not a forecast.",
                 )
 
+            local_quote_time = quote_time.tz_convert('America/New_York')
             if not quotes_fresh:
-                st.warning("Quote is from the previous market close. Current cost and profit/loss are hidden; refresh during market hours.")
-            else:
-                entry_cost = ask * 100
-                fair_reference = ((bid + ask) / 2) * 100
-                breakeven = listed_strike + ask if option_type == 'call' else listed_strike - ask
-                intrinsic = max(target_price - listed_strike, 0) if option_type == 'call' else max(listed_strike - target_price, 0)
-                projected_pnl = (intrinsic - ask) * 100
-                st.markdown("**Your estimate · 1 contract (100 shares)**")
-                result_cols = st.columns(2)
-                with result_cols[0]:
-                    st.metric("Estimated cost at Ask", f"${entry_cost:,.0f}", help="Uses the current seller's Ask × 100, before fees. Not a guaranteed execution price.")
-                with result_cols[1]:
-                    st.metric("Possible result at expiration", f"${projected_pnl:+,.0f}", help="Your hypothetical stock price minus the Ask-based premium, before fees.")
-                st.caption(f"Current quote per share: Bid ${bid:.2f} · Ask ${ask:.2f} · midpoint ${((bid + ask) / 2):.2f}. Estimated Ask cost for one contract: ${entry_cost:,.0f}; midpoint reference: ${fair_reference:,.0f}.")
-                scenario_word = "gain" if projected_pnl > 0 else "loss" if projected_pnl < 0 else "break-even"
-                st.info(f"Plain-English read: at your assumed ${target_price:.2f} stock price on expiration, this one-contract scenario shows an estimated {scenario_word} of ${abs(projected_pnl):,.0f}, before fees. This is a rule-based explanation of your inputs, not an AI forecast or a recommendation.")
-                spread_pct = finite(selected['spreadPct'], np.nan)
-                if np.isfinite(spread_pct) and spread_pct > 20:
-                    st.warning(f"Wide spread ({spread_pct:.1f}%). The displayed cost may be less reliable.")
-                if finite(selected['openInterest']) < 100 or finite(selected['volume']) < 10:
-                    st.info("Low recent trading activity or open interest. The contract may be harder to trade near the displayed quote.")
-                with st.expander("Break-even and maximum risk"):
-                    max_gain = "Unlimited above break-even" if option_type == 'call' else f"Up to ${max(0, listed_strike * 100 - entry_cost):,.0f}"
-                    st.write(f"**Break-even at expiration:** ${breakeven:.2f}")
-                    st.write(f"**Maximum loss:** ${entry_cost:,.0f} (the premium paid, before fees)")
-                    st.write(f"**Maximum gain:** {max_gain}")
-                    st.caption("This payoff assumes you hold one long option until expiration. Before expiration, time and implied volatility can change its market price.")
+                st.warning(f"Last available quote · {local_quote_time.strftime('%b %d, %I:%M %p ET')}. The figures below are for practice only—not current prices or an estimate of what an order would cost now.")
+
+            entry_cost = ask * 100
+            fair_reference = ((bid + ask) / 2) * 100
+            breakeven = listed_strike + ask if option_type == 'call' else listed_strike - ask
+            intrinsic = max(target_price - listed_strike, 0) if option_type == 'call' else max(listed_strike - target_price, 0)
+            projected_pnl = (intrinsic - ask) * 100
+            st.markdown("**Your scenario · 1 contract (100 shares)**")
+            result_cols = st.columns(2)
+            with result_cols[0]:
+                cost_label = "Last-quote cost reference" if not quotes_fresh else "Estimated cost at Ask"
+                cost_help = ("Previous quote Ask × 100; illustrative only, not a current purchase price." if not quotes_fresh
+                             else "Uses the current seller's Ask × 100, before fees. Not a guaranteed execution price.")
+                st.metric(cost_label, f"${entry_cost:,.0f}", help=cost_help)
+            with result_cols[1]:
+                pnl_label = "Scenario result · last quote" if not quotes_fresh else "Possible result at expiration"
+                st.metric(pnl_label, f"${projected_pnl:+,.0f}", help="Your hypothetical stock price at expiration, minus the option premium reference, before fees.")
+            quote_label = "Last available quote" if not quotes_fresh else "Current quote"
+            st.caption(f"{quote_label} per share: Bid ${bid:.2f} · Ask ${ask:.2f} · midpoint ${((bid + ask) / 2):.2f}. Ask-based one-contract reference: ${entry_cost:,.0f}; midpoint reference: ${fair_reference:,.0f}.")
+            scenario_word = "gain" if projected_pnl > 0 else "loss" if projected_pnl < 0 else "break-even"
+            scenario_context = "using that old quote as the example entry" if not quotes_fresh else "using the current Ask as the example entry"
+            st.info(f"At your assumed ${target_price:.2f} stock price on expiration, this scenario shows an estimated {scenario_word} of ${abs(projected_pnl):,.0f} {scenario_context}, before fees. It is a calculation from your inputs, not a forecast or recommendation.")
+            spread_pct = finite(selected['spreadPct'], np.nan)
+            if np.isfinite(spread_pct) and spread_pct > 20:
+                st.warning(f"Wide spread ({spread_pct:.1f}%). The displayed cost may be less reliable.")
+            if finite(selected['openInterest']) < 100 or finite(selected['volume']) < 10:
+                st.info("Low recent trading activity or open interest. The contract may be harder to trade near the displayed quote.")
+            with st.expander("Break-even and maximum risk"):
+                max_gain = "Unlimited above break-even" if option_type == 'call' else f"Up to ${max(0, listed_strike * 100 - entry_cost):,.0f}"
+                st.write(f"**Break-even at expiration, using this premium:** ${breakeven:.2f}")
+                st.write(f"**Maximum loss for one contract:** ${entry_cost:,.0f} (premium reference, before fees)")
+                st.write(f"**Maximum gain:** {max_gain}")
+                st.caption("This payoff assumes you hold one long option until expiration. Before expiration, time and implied volatility can change its market price.")
 
             with st.expander("Advanced details · quotes and definitions", expanded=False):
                 local_quote_time = quote_time.tz_convert('America/New_York')
