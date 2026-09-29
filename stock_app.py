@@ -317,6 +317,11 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .option-table th { text-align:left; color:#85808f; font-weight:650; padding:8px 6px; border-bottom:1px solid #e4e1e9; }
 .option-table td { color:#292733; padding:9px 6px; border-bottom:1px solid #efedf2; }
 .option-table td:not(:first-child), .option-table th:not(:first-child) { text-align:right; }
+.volatility-panel { background:linear-gradient(145deg,#f7f4ff,#fff 58%,#f5f8eb); border:1px solid #e6e0f5; border-radius:18px; padding:14px; margin:12px 0; }
+.volatility-copy { color:#777181; font-size:11px; line-height:1.55; margin:5px 0 10px; }
+.volatility-stat { background:#fff; border:1px solid #e9e6ef; border-radius:13px; padding:11px; min-height:74px; }
+.volatility-stat-label { color:#85808f; font-size:10px; line-height:1.4; }
+.volatility-stat-value { color:#171821; font-size:18px; font-weight:800; margin-top:5px; }
 .risk-defined { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; border-radius:999px; padding:5px 8px; font-size:9px; font-weight:800; }
 .guide-steps { display:grid; gap:7px; margin:9px 0 13px; }
 .guide-step { display:flex; gap:11px; align-items:flex-start; background:#fff; border:1px solid #e8e4ef; border-radius:15px; padding:11px 12px; }
@@ -1391,6 +1396,74 @@ with tab_options:
                               chain['strike'].between(cur * .65, cur * 1.35)].copy()
             if chain.empty:
                 raise ValueError('No usable contracts with valid prices were returned for this expiration.')
+            # Use reported option IV only; never substitute the scenario model's fallback IV.
+            observed_iv = chain.loc[
+                chain['impliedVolatility'].notna() &
+                (chain['impliedVolatility'] > .01) &
+                chain['spreadPct'].notna() &
+                (chain['spreadPct'] <= 20)
+            ].copy()
+            expiry_iv = np.nan
+            expected_move = np.nan
+            if not observed_iv.empty:
+                atm_index = (observed_iv['strike'] - cur).abs().idxmin()
+                expiry_iv = finite(observed_iv.loc[atm_index, 'impliedVolatility'], np.nan)
+                if np.isfinite(expiry_iv) and expiry_iv > 0:
+                    expected_move = cur * expiry_iv * math.sqrt(max(dte, 1) / 365)
+            st.markdown(f"""
+            <div class="volatility-panel">
+              <div class="eyebrow">VOLATILITY SNAPSHOT · {expiration}</div>
+              <div style="font-size:18px;font-weight:800;color:#191720;margin-top:4px;">What movement is the options market pricing in?</div>
+              <div class="volatility-copy">Implied volatility (IV) reflects option prices. It estimates the size of a possible move, not whether the stock will rise or fall. These are estimates, not a forecast.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            vol_cols = st.columns(3)
+            with vol_cols[0]:
+                iv_text = f"{expiry_iv * 100:.1f}%" if np.isfinite(expiry_iv) else "Unavailable"
+                st.markdown(f'<div class="volatility-stat"><div class="volatility-stat-label">Options-implied volatility · nearest liquid strike</div><div class="volatility-stat-value">{iv_text}</div></div>', unsafe_allow_html=True)
+            with vol_cols[1]:
+                st.markdown(f'<div class="volatility-stat"><div class="volatility-stat-label">Recent realized volatility · past 20 trading days</div><div class="volatility-stat-value">{risk["vol20"]:.1f}%</div></div>', unsafe_allow_html=True)
+            with vol_cols[2]:
+                move_text = f"±${expected_move:.2f}" if np.isfinite(expected_move) else "Unavailable"
+                st.markdown(f'<div class="volatility-stat"><div class="volatility-stat-label">Approx. one-standard-deviation move by expiry</div><div class="volatility-stat-value">{move_text}</div></div>', unsafe_allow_html=True)
+            st.caption(
+                f"Stock reference ${cur:.2f} · expiration {expiration_date.strftime('%b %d, %Y')} · "
+                f"Alpaca {app_setting('ALPACA_OPTIONS_FEED', 'opra').upper()} option quotes / {stock_feed.upper()} stock quotes. "
+                "Recent realized volatility looks backward; implied volatility comes from current option prices. They are not directly interchangeable."
+            )
+            if not observed_iv.empty:
+                latest_iv_quote = pd.to_datetime(observed_iv['quoteTimestamp'], utc=True, errors='coerce').max()
+                if pd.notna(latest_iv_quote):
+                    quote_age_for_iv = max(0, (datetime.now(timezone.utc) - latest_iv_quote.to_pydatetime()).total_seconds())
+                    quote_status = 'Previous close' if quote_age_for_iv > 120 else 'Recent quote'
+                    st.caption(f"Option quotes: {quote_status} · latest included quote {latest_iv_quote.strftime('%b %d, %I:%M:%S %p UTC')}.")
+            if not observed_iv.empty:
+                skew_view = observed_iv.sort_values('strike').copy()
+                skew_view['ivPct'] = skew_view['impliedVolatility'] * 100
+                fig_vol = go.Figure()
+                fig_vol.add_trace(go.Scatter(
+                    x=skew_view['strike'], y=skew_view['ivPct'], mode='lines+markers',
+                    name='Implied volatility', line=dict(color='#7651e8', width=2),
+                    marker=dict(size=6, color='#7651e8'),
+                    hovertemplate='Strike $%{x:.2f}<br>IV %{y:.1f}%<extra></extra>',
+                ))
+                fig_vol.add_vline(x=cur, line_dash='dash', line_color='#84ad19',
+                                  annotation_text='Stock price', annotation_position='top')
+                fig_vol.update_layout(
+                    title=dict(text=f"How IV changes across {option_type}s · same expiration", font=dict(size=14)),
+                    height=260, margin=dict(l=8, r=8, t=42, b=10),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    showlegend=False, font=dict(color='#34343d', size=10),
+                    xaxis_title='Strike price', yaxis_title='Implied volatility (%)',
+                )
+                fig_vol.update_yaxes(ticksuffix='%', gridcolor='#eeebf2')
+                fig_vol.update_xaxes(tickprefix='$', gridcolor='#f3f1f5')
+                st.plotly_chart(fig_vol, width='stretch', config={'displayModeBar': False})
+                st.caption("The dashed line marks the current stock price. The curve shows how the market prices volatility at different strikes; wide-spread quotes are excluded.")
+            else:
+                st.info("There are not enough reliable two-sided option quotes with reported implied volatility to draw the strike chart. No model-estimated IV is substituted here.")
+            with st.expander("How to read this", expanded=False):
+                st.markdown("**Realized volatility** summarizes how much the stock actually moved over the past 20 trading days. **Implied volatility** is backed out from current option prices and reflects the market's priced-in movement. A higher IV means options are more expensive, all else equal; it does not predict direction. The estimated move is a simple one-standard-deviation reference and is not a guaranteed range.")
             chain['rank'] = (abs(chain['strike'] / cur - 1) +
                              chain['spreadPct'].fillna(100).clip(0, 100) / 220 +
                              np.where(chain['openInterest'] >= 100, 0, .20))
