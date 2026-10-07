@@ -1537,8 +1537,86 @@ with tab_options:
                     fig_iv.update_xaxes(tickprefix='$', gridcolor='#f3f1f5')
                     st.plotly_chart(fig_iv, width='stretch', config={'displayModeBar': False})
         except Exception as exc:
-            st.error("Volatility data is unavailable right now. The stock research pages still work normally.")
-            with st.expander("Technical details"):
+            st.warning("Live option quotes are unavailable right now. You can still explore a rough scenario using the stock's recent historical volatility.")
+            # Keep the educational scenario usable when the options feed or stock
+            # quote endpoint fails. This is a model estimate, never a market quote.
+            spot = cur
+            fallback_vol = max(finite(risk.get('vol20')) / 100, .05)
+            fallback_dividend = min(max(finite(info.get('dividendYield')), 0), .20)
+            st.caption(
+                f"Using {ticker}'s latest daily close (${spot:.2f}, {data_as_of}) and "
+                f"20-day realized volatility ({fallback_vol * 100:.1f}% annualized)."
+            )
+            fallback_col1, fallback_col2 = st.columns(2)
+            with fallback_col1:
+                fallback_side = st.selectbox(
+                    "Call or put", ["Call", "Put"], key=f"fallback_side_{ticker}"
+                )
+            with fallback_col2:
+                fallback_days = st.selectbox(
+                    "Time horizon", [7, 14, 30, 60, 90, 180], index=2,
+                    format_func=lambda days: f"{days} days",
+                    key=f"fallback_days_{ticker}",
+                    help="A scenario horizon for the estimate; it is not a selected listed contract expiration.",
+                )
+            fallback_type = fallback_side.lower()
+            expected_move = spot * fallback_vol * math.sqrt(fallback_days / 252)
+            fallback_strike = st.number_input(
+                "Assumed strike price ($)", min_value=0.01,
+                value=float(round(spot, 2)), step=1.0,
+                key=f"fallback_strike_{ticker}_{fallback_side}_{fallback_days}",
+                help="This is an assumption for the model because a listed option chain could not be loaded.",
+            )
+            fallback_target = st.number_input(
+                "Your assumed stock price at the end ($)", min_value=0.0,
+                value=float(round(spot, 2)), step=1.0,
+                key=f"fallback_target_{ticker}_{fallback_side}_{fallback_days}",
+                help="Try different prices to see how the expiration payoff changes. This is your scenario, not a forecast.",
+            )
+            model_price = option_model(
+                spot, fallback_strike, fallback_days / 365, .04,
+                fallback_dividend, fallback_vol, fallback_type,
+            )['price']
+            model_cost = model_price * 100
+            fallback_intrinsic = (
+                max(fallback_target - fallback_strike, 0)
+                if fallback_type == 'call'
+                else max(fallback_strike - fallback_target, 0)
+            )
+            fallback_pnl = (fallback_intrinsic - model_price) * 100
+            fallback_breakeven = (
+                fallback_strike + model_price if fallback_type == 'call'
+                else fallback_strike - model_price
+            )
+            st.metric(
+                f"Historical-volatility move estimate · {fallback_days} days",
+                f"±${expected_move:.2f} · about ±{expected_move / spot * 100:.1f}%"
+                if spot > 0 else "Unavailable",
+                help="Uses past stock movement, not option-implied volatility. It gives no direction and is not a forecast.",
+            )
+            st.markdown("**Illustrative estimate · one contract (100 shares)**")
+            estimate_cols = st.columns(2)
+            with estimate_cols[0]:
+                st.metric("Model premium estimate", f"${model_cost:,.0f}",
+                          help="Black-Scholes estimate using recent historical volatility. This is not an ask price or a reliable purchase-cost quote.")
+            with estimate_cols[1]:
+                st.metric("Possible expiration result", f"${fallback_pnl:+,.0f}",
+                          help="Intrinsic value at your assumed end price minus the model premium estimate, before fees.")
+            st.caption(
+                f"Estimated break-even: ${fallback_breakeven:.2f} · "
+                f"Maximum loss in this simplified long-option model: ${model_cost:,.0f} before fees."
+            )
+            st.info(
+                f"At your assumed ${fallback_target:.2f} stock price after {fallback_days} days, "
+                f"the model shows ${fallback_pnl:+,.0f} for one contract. This is a rough scenario, "
+                "not a live quote, forecast, or recommendation. Actual option prices can differ substantially."
+            )
+            st.caption(
+                "Why the estimate is rough: realized volatility looks backward and can differ from "
+                "the volatility priced into options. The model also simplifies rates, dividends, "
+                "early exercise, and market supply and demand. Check a broker quote before using a price."
+            )
+            with st.expander("Why live option data did not load"):
                 st.code(str(exc))
 
 with research_evidence:
