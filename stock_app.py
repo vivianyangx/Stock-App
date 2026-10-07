@@ -1113,13 +1113,16 @@ st.markdown(f"""
       <div class="ticker-company">{company}</div>
     </div>
   </div>
-  <div class="market-pill"><span class="market-dot"></span>DAILY DATA</div>
+  <div class="market-pill"><span class="market-dot"></span>DAILY CLOSE</div>
 </div>
 """, unsafe_allow_html=True)
 
-tab_overview, tab_signals, tab_risk, tab_options, tab_research = st.tabs([
-    "Overview", "Signals", "Risk", "Volatility", "Research"
+tab_overview, tab_options, tab_more = st.tabs([
+    "Stock Prediction", "Options", "More"
 ])
+
+with tab_more:
+    tab_signals, tab_risk, tab_research = st.tabs(["Signals", "Risk", "Research"])
 
 with tab_signals:
     signal_trend, signal_momentum = st.tabs(["Trend", "Momentum"])
@@ -1130,6 +1133,7 @@ with tab_research:
     ])
 
 with tab_overview:
+    st.caption("Technical outlook based on historical prices, trend and volatility. Review the data date and watch zones before comparing an options idea.")
     if cur < plan['stop']:
         current_view = "RISK WARNING"
         view_class = "view-risk"
@@ -1317,9 +1321,9 @@ with tab_risk:
 with tab_options:
     st.markdown(f"""
     <div class="option-hero">
-      <div class="eyebrow">OPTIONS RESEARCH · NO TRADING</div>
-      <div class="option-hero-value">Explore an option idea</div>
-      <div class="option-hero-copy">See how much movement the market expects, then estimate one call or put scenario. This app never places orders.</div>
+      <div class="eyebrow">EXTENDS {safe_ticker}'S STOCK PREDICTION · NO TRADING</div>
+      <div class="option-hero-value">Explore a Call or Put</div>
+      <div class="option-hero-copy">Use the stock outlook as context, then compare it with option-market movement and your own price scenario. This app never places orders.</div>
     </div>
     """, unsafe_allow_html=True)
 

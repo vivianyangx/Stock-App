@@ -27,4 +27,6 @@ The plain-English volatility and scenario notes are deterministic explanations o
 
 The app does not continuously maintain an options WebSocket connection; quotes are fetched as snapshots when the scenario renders and refresh with Streamlit reruns. Historical chart prices remain Yahoo sourced and are not used as the Options Lab's current underlying price.
 
+The main navigation keeps **Stock Prediction** first, **Options** as the same ticker's follow-on research, and secondary **Signals**, **Risk**, and **Research** sections under **More**. Stock ranges are technical watch zones derived from historical price structure and volatility, not guaranteed predictions or orders.
+
 This app is for research and education. Prices are not guaranteed execution prices and the app does not provide personalized investment advice.
