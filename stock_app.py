@@ -10,8 +10,8 @@ import html
 import io
 import json
 import math
-import os
-from datetime import date, datetime, timezone
+from datetime import date
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import streamlit as st
@@ -20,7 +20,6 @@ import pandas as pd
 import numpy as np
 from textblob import TextBlob
 import plotly.graph_objects as go
-import requests
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -317,11 +316,6 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .option-table th { text-align:left; color:#85808f; font-weight:650; padding:8px 6px; border-bottom:1px solid #e4e1e9; }
 .option-table td { color:#292733; padding:9px 6px; border-bottom:1px solid #efedf2; }
 .option-table td:not(:first-child), .option-table th:not(:first-child) { text-align:right; }
-.volatility-panel { background:linear-gradient(145deg,#f7f4ff,#fff 58%,#f5f8eb); border:1px solid #e6e0f5; border-radius:18px; padding:14px; margin:12px 0; }
-.volatility-copy { color:#777181; font-size:11px; line-height:1.55; margin:5px 0 10px; }
-.volatility-stat { background:#fff; border:1px solid #e9e6ef; border-radius:13px; padding:11px; min-height:74px; }
-.volatility-stat-label { color:#85808f; font-size:10px; line-height:1.4; }
-.volatility-stat-value { color:#171821; font-size:18px; font-weight:800; margin-top:5px; }
 .risk-defined { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; border-radius:999px; padding:5px 8px; font-size:9px; font-weight:800; }
 .guide-steps { display:grid; gap:7px; margin:9px 0 13px; }
 .guide-step { display:flex; gap:11px; align-items:flex-start; background:#fff; border:1px solid #e8e4ef; border-radius:15px; padding:11px 12px; }
@@ -334,6 +328,12 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .answer-chip { display:inline-block; border-radius:999px; padding:5px 8px; margin:7px 4px 0 0; color:#5c3abc; background:#eee8ff; font-size:9px; font-weight:750; }
 .answer-chip.green { color:#607d12; background:#f0f7d9; }
 .answer-chip.red { color:#bf4554; background:#fff0f1; }
+.session-card { background:linear-gradient(145deg,#171620,#272238); border-radius:18px; padding:14px 15px; color:#fff; margin:8px 0 12px; box-shadow:0 10px 24px rgba(35,29,53,.14); }
+.session-card .eyebrow { color:#aaa3bb; }
+.session-price { font-size:23px; font-weight:850; letter-spacing:-.7px; margin:4px 0 2px; }
+.session-meta { color:#bcb6c8; font-size:9px; line-height:1.5; }
+.session-live { display:inline-flex; align-items:center; gap:5px; color:#bce71d; font-size:9px; font-weight:800; }
+.session-live:before { content:''; width:6px; height:6px; border-radius:50%; background:#c8f51d; box-shadow:0 0 0 4px rgba(200,245,29,.12); }
 .stTabs [data-baseweb="tab-list"] { background:transparent; padding:0; border-radius:0; gap:22px; border-bottom:1px solid #e5e1ea; box-shadow:none; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
 .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
 .stTabs [data-baseweb="tab"] { background:transparent; border:0; color:#777181; border-radius:0; padding:10px 2px 12px; flex:0 0 auto; font-weight:650; }
@@ -345,19 +345,6 @@ div[data-testid="stButton"] button[kind="secondary"] { background:#6c00f5; color
 div[data-testid="stExpander"] { background:rgba(255,255,255,.86); border:1px solid #e5e1ec; border-radius:16px; overflow:hidden; box-shadow:0 6px 20px rgba(62,53,82,.04); }
 div[data-testid="stMetric"] { background:#ececef; border-radius:13px; padding:10px; }
 label, .stMarkdown, [data-testid="stCaptionContainer"] { color:#34343d; }
-
-/* Compact type scale: Streamlit's default headings and metrics are too large here. */
-.block-container h1 { font-size:23px !important; line-height:1.25 !important; }
-.block-container h2 { font-size:19px !important; line-height:1.3 !important; margin-top:14px !important; }
-.block-container h3 { font-size:16px !important; line-height:1.35 !important; }
-.block-container p, .block-container li { font-size:13px; line-height:1.5; }
-.block-container label, .block-container [data-testid="stCaptionContainer"] { font-size:12px !important; line-height:1.45 !important; }
-[data-testid="stMetricLabel"] { font-size:11px !important; line-height:1.3 !important; }
-[data-testid="stMetricValue"] { font-size:22px !important; line-height:1.2 !important; }
-[data-testid="stMetricValue"] div { font-size:22px !important; }
-[data-testid="stAlert"] p { font-size:13px !important; line-height:1.45 !important; }
-div[data-testid="stSelectbox"] div, div[data-testid="stNumberInput"] input { font-size:14px !important; }
-div[data-testid="stExpander"] summary { font-size:13px !important; }
 
 @media (max-width: 560px) {
     .stApp { background:#f8f8f5; }
@@ -522,6 +509,38 @@ def fetch_data(ticker: str, period: str = "2y") -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_intraday_extended(ticker: str) -> pd.DataFrame:
+    """Recent five-minute bars including pre-market and after-hours sessions."""
+    raw = yf.download(
+        ticker, period='5d', interval='5m', prepost=True, progress=False,
+        auto_adjust=False, repair=True, keepna=False, threads=False, timeout=15,
+    )
+    if raw.empty:
+        return pd.DataFrame()
+    frame = raw.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    frame = frame.loc[:, [column for column in ['Open', 'High', 'Low', 'Close', 'Volume']
+                          if column in frame.columns]].dropna(subset=['Close'])
+    index = pd.DatetimeIndex(frame.index)
+    if index.tz is None:
+        index = index.tz_localize('UTC')
+    frame.index = index.tz_convert(ZoneInfo('America/New_York'))
+    return frame.sort_index()
+
+
+def trading_session_label(timestamp: pd.Timestamp) -> str:
+    minutes = timestamp.hour * 60 + timestamp.minute
+    if 4 * 60 <= minutes < 9 * 60 + 30:
+        return 'PRE-MARKET'
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return 'REGULAR'
+    if 16 * 60 <= minutes < 20 * 60:
+        return 'AFTER HOURS'
+    return 'OVERNIGHT'
+
+
 def finite(value, fallback=0.0) -> float:
     """Return a safe float for UI math when an indicator is missing."""
     try:
@@ -572,125 +591,16 @@ def option_model(spot: float, strike: float, years: float, rate: float,
             'theta': theta_year / 365, 'vega': vega}
 
 
-def alpaca_credentials() -> tuple[str, str]:
-    """Read Alpaca credentials from Streamlit secrets or environment variables."""
-    try:
-        key = st.secrets.get('ALPACA_API_KEY', '')
-        secret = st.secrets.get('ALPACA_SECRET_KEY', '')
-    except Exception:
-        key, secret = '', ''
-    key = key or os.getenv('ALPACA_API_KEY', '')
-    secret = secret or os.getenv('ALPACA_SECRET_KEY', '')
-    if not key or not secret:
-        raise RuntimeError('Alpaca credentials are missing. Add ALPACA_API_KEY and ALPACA_SECRET_KEY to Streamlit Secrets.')
-    return key, secret
-
-
-def app_setting(name: str, default: str) -> str:
-    """Read an app setting from Streamlit Cloud Secrets, then local environment."""
-    try:
-        value = st.secrets.get(name, '')
-    except Exception:
-        value = ''
-    return str(value or os.getenv(name, default)).strip()
-
-
-def alpaca_request(url: str, params: dict | None = None) -> dict:
-    key, secret = alpaca_credentials()
-    response = requests.get(url, params=params, headers={
-        'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret,
-        'Accept': 'application/json',
-    }, timeout=15)
-    if response.status_code == 401:
-        raise RuntimeError('Alpaca returned HTTP 401: the API key and secret are invalid or do not belong to the same account/environment. Replace both with a matching active key pair.')
-    if response.status_code == 403:
-        raise RuntimeError('Alpaca returned HTTP 403: credentials were accepted, but this market-data feed is not enabled for the account. Check the requested feed and subscription plan.')
-    response.raise_for_status()
-    return response.json()
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_option_expirations(ticker: str) -> list[str]:
+    return list(yf.Ticker(ticker).options)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def alpaca_option_contracts(ticker: str, option_type: str) -> pd.DataFrame:
-    rows, token = [], None
-    today = pd.Timestamp.now(tz='America/New_York').date()
-    through = (pd.Timestamp(today) + pd.Timedelta(days=365)).date()
-    while True:
-        params = {'underlying_symbols': ticker, 'status': 'active', 'type': option_type,
-                  'expiration_date_gte': today.isoformat(),
-                  'expiration_date_lte': through.isoformat(),
-                  'limit': 10000}
-        if token:
-            params['page_token'] = token
-        payload = alpaca_request('https://paper-api.alpaca.markets/v2/options/contracts', params)
-        rows.extend(payload.get('option_contracts', []))
-        token = payload.get('next_page_token')
-        if not token:
-            break
-    frame = pd.DataFrame(rows)
-    if frame.empty:
-        return frame
-    frame['expiration_date'] = pd.to_datetime(frame['expiration_date'], errors='coerce').dt.strftime('%Y-%m-%d')
-    frame['strike_price'] = pd.to_numeric(frame['strike_price'], errors='coerce')
-    return frame.dropna(subset=['expiration_date', 'strike_price'])
-
-
-def fetch_option_expirations(ticker: str, option_type: str | None = None) -> list[str]:
-    types = [option_type] if option_type else ['call', 'put']
-    expirations = set()
-    for contract_type in types:
-        contracts = alpaca_option_contracts(ticker, contract_type)
-        expirations.update(contracts['expiration_date'].dropna().unique().tolist())
-    return sorted(expirations)
-
-
-@st.cache_data(ttl=5, show_spinner=False)
 def fetch_option_chain(ticker: str, expiration: str, option_type: str) -> pd.DataFrame:
-    contracts = alpaca_option_contracts(ticker, option_type)
-    contracts = contracts.loc[contracts['expiration_date'].eq(expiration)].copy()
-    if contracts.empty:
-        return contracts
-    feed = app_setting('ALPACA_OPTIONS_FEED', 'opra').lower()
-    if feed not in {'opra', 'indicative'}:
-        raise RuntimeError('ALPACA_OPTIONS_FEED must be opra or indicative.')
-    symbols = contracts['symbol'].astype(str).tolist()
-    snapshots = {}
-    # Multi-symbol snapshots are limited to 100 symbols per request.
-    for offset in range(0, len(symbols), 100):
-        params = {'feed': feed, 'symbols': ','.join(symbols[offset:offset + 100])}
-        payload = alpaca_request('https://data.alpaca.markets/v1beta1/options/snapshots', params)
-        snapshots.update(payload.get('snapshots', {}))
-    records = []
-    for contract in contracts.itertuples(index=False):
-        snap = snapshots.get(str(contract.symbol), {})
-        quote = snap.get('latestQuote') or {}
-        trade = snap.get('latestTrade') or {}
-        greeks = snap.get('greeks') or {}
-        records.append({
-            'contractSymbol': str(contract.symbol), 'strike': contract.strike_price,
-            'bid': quote.get('bp'), 'ask': quote.get('ap'), 'bidSize': quote.get('bs'),
-            'askSize': quote.get('as'), 'quoteTimestamp': quote.get('t'),
-            'lastPrice': (trade.get('p') if trade else None), 'tradeTimestamp': trade.get('t'),
-            'volume': getattr(contract, 'volume', 0) or 0,
-            'openInterest': getattr(contract, 'open_interest', 0) or 0,
-            # Alpaca exposes IV as a top-level snapshot field; Greeks are a separate object.
-            'impliedVolatility': snap.get('impliedVolatility', snap.get('implied_volatility')),
-            'delta': greeks.get('delta'),
-            'gamma': greeks.get('gamma'), 'theta': greeks.get('theta'),
-            'vega': greeks.get('vega'), 'dataFeed': feed,
-        })
-    return pd.DataFrame(records)
-
-
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_alpaca_stock_quote(ticker: str, feed: str) -> tuple[float, datetime]:
-    payload = alpaca_request(
-        f'https://data.alpaca.markets/v2/stocks/{ticker}/quotes/latest', {'feed': feed})
-    quote = payload.get('quote') or {}
-    bid, ask = finite(quote.get('bp'), np.nan), finite(quote.get('ap'), np.nan)
-    stamp = pd.to_datetime(quote.get('t'), utc=True, errors='coerce')
-    if not np.isfinite(bid) or not np.isfinite(ask) or bid <= 0 or ask < bid or pd.isna(stamp):
-        raise RuntimeError('Alpaca did not return a valid two-sided SIP stock quote.')
-    return (bid + ask) / 2, stamp.to_pydatetime()
+    chain = yf.Ticker(ticker).option_chain(expiration)
+    frame = chain.calls if option_type == 'call' else chain.puts
+    return frame.copy()
 
 
 def enrich_option_chain(frame: pd.DataFrame, spot: float, days: int,
@@ -703,8 +613,11 @@ def enrich_option_chain(frame: pd.DataFrame, spot: float, days: int,
     work['volume'] = work['volume'].fillna(0)
     work['openInterest'] = work['openInterest'].fillna(0)
     valid_quote = (work['bid'] > 0) & (work['ask'] >= work['bid'])
-    # A last trade is not an executable two-sided quote; never use it as a premium fallback.
-    work['mid'] = np.where(valid_quote, (work['bid'] + work['ask']) / 2, np.nan)
+    work['mid'] = np.where(
+        valid_quote,
+        (work['bid'] + work['ask']) / 2,
+        work['lastPrice'],
+    )
     work['spreadPct'] = np.where(
         valid_quote & (work['mid'] > 0),
         (work['ask'] - work['bid']) / work['mid'] * 100, np.nan
@@ -923,6 +836,45 @@ def build_mobile_chart(df: pd.DataFrame, window: str) -> go.Figure:
     return fig
 
 
+def build_extended_hours_chart(frame: pd.DataFrame, official_close: float) -> go.Figure:
+    """Compact intraday view that visually separates regular and extended sessions."""
+    latest_date = frame.index[-1].date()
+    view = frame.loc[frame.index.date == latest_date].copy()
+    view['Session'] = [trading_session_label(pd.Timestamp(value)) for value in view.index]
+    colors = {
+        'PRE-MARKET': '#9b76ff', 'REGULAR': '#c8f51d',
+        'AFTER HOURS': '#ff9e64', 'OVERNIGHT': '#64c7ff',
+    }
+    fig = go.Figure()
+    for session in ['PRE-MARKET', 'REGULAR', 'AFTER HOURS', 'OVERNIGHT']:
+        segment = view.loc[view['Session'].eq(session)]
+        if segment.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=segment.index, y=segment['Close'], mode='lines', name=session.title(),
+            line=dict(color=colors[session], width=2),
+            hovertemplate=f'{session.title()}<br>%{{x|%I:%M %p ET}}<br>$%{{y:.2f}}<extra></extra>',
+        ))
+    fig.add_hline(
+        y=official_close, line_dash='dot', line_width=1,
+        line_color='rgba(255,255,255,.35)', annotation_text=' official close ',
+        annotation_font_color='#d4d0dd', annotation_font_size=9,
+    )
+    fig.update_layout(
+        height=225, paper_bgcolor='#161621', plot_bgcolor='#161621',
+        font=dict(family='Inter', color='#9a9aa5', size=9),
+        margin=dict(l=8, r=8, t=34, b=8), hovermode='x unified', dragmode='pan',
+        title=dict(text='Today · regular + extended hours', x=.04, y=.95,
+                   font=dict(color='#f8f8fb', size=11)),
+        legend=dict(orientation='h', x=.98, xanchor='right', y=1.12,
+                    font=dict(size=8), bgcolor='rgba(0,0,0,0)'),
+    )
+    fig.update_xaxes(showgrid=False, tickformat='%I %p', nticks=5, fixedrange=False)
+    fig.update_yaxes(side='right', tickprefix='$', nticks=5, fixedrange=False,
+                     gridcolor='rgba(255,255,255,.07)')
+    return fig
+
+
 def classify_regime(frame: pd.DataFrame) -> pd.Series:
     """Classify price structure using only information available on each date."""
     close, ma20, ma50, ma200 = (frame['Close'], frame['MA20'],
@@ -1061,6 +1013,11 @@ try:
 except Exception:
     info = {}
 
+try:
+    intraday = fetch_intraday_extended(ticker)
+except Exception:
+    intraday = pd.DataFrame()
+
 cur = finite(df['Close'].iloc[-1])
 prev = finite(df['Close'].iloc[-2], cur)
 chg_1d = (cur - prev) / prev * 100 if prev else 0
@@ -1104,6 +1061,55 @@ returns_by_horizon = {
     '1 year': (cur / finite(df['Close'].iloc[-252], cur) - 1) * 100,
 }
 
+# Keep the official daily close as the technical-analysis anchor. A fresh
+# pre/post-market quote is used only as a clearly labeled preview.
+market_state = str(info.get('marketState') or '').upper()
+state_map = {
+    'PRE': 'PRE-MARKET', 'PREPRE': 'PRE-MARKET',
+    'POST': 'AFTER HOURS', 'POSTPOST': 'AFTER HOURS',
+    'REGULAR': 'REGULAR', 'CLOSED': 'CLOSED',
+}
+session_label = state_map.get(market_state, 'CLOSED')
+extended_active = session_label in ('PRE-MARKET', 'AFTER HOURS', 'OVERNIGHT')
+extended_price = 0.0
+extended_timestamp = None
+if session_label == 'PRE-MARKET':
+    extended_price = finite(info.get('preMarketPrice'))
+    raw_timestamp = info.get('preMarketTime')
+elif session_label == 'AFTER HOURS':
+    extended_price = finite(info.get('postMarketPrice'))
+    raw_timestamp = info.get('postMarketTime')
+else:
+    raw_timestamp = None
+try:
+    if raw_timestamp:
+        extended_timestamp = pd.to_datetime(float(raw_timestamp), unit='s', utc=True).tz_convert('America/New_York')
+except (TypeError, ValueError, OverflowError):
+    extended_timestamp = None
+
+if not intraday.empty:
+    latest_intraday_time = pd.Timestamp(intraday.index[-1])
+    latest_intraday_price = finite(intraday['Close'].iloc[-1])
+    latest_intraday_session = trading_session_label(latest_intraday_time)
+    now_et = pd.Timestamp.now(tz='America/New_York')
+    intraday_age_minutes = max(0.0, (now_et - latest_intraday_time).total_seconds() / 60)
+    if extended_active and latest_intraday_session == session_label and intraday_age_minutes <= 240:
+        extended_price = latest_intraday_price or extended_price
+        extended_timestamp = latest_intraday_time
+    elif not extended_active and latest_intraday_session in ('PRE-MARKET', 'AFTER HOURS', 'OVERNIGHT') and intraday_age_minutes <= 30:
+        session_label = latest_intraday_session
+        extended_active = True
+        extended_price = latest_intraday_price
+        extended_timestamp = latest_intraday_time
+
+if extended_price <= 0:
+    extended_active = False
+analysis_price = extended_price if extended_active else cur
+extended_change = (analysis_price / cur - 1) * 100 if cur else 0.0
+extended_time_text = (extended_timestamp.strftime('%b %d · %I:%M %p ET')
+                      if extended_timestamp is not None else 'Latest available quote')
+market_pill_label = session_label if extended_active else ('LIVE MARKET' if market_state == 'REGULAR' else 'DAILY DATA')
+
 st.markdown(f"""
 <div class="mobile-nav">
   <div class="ticker-identity">
@@ -1113,16 +1119,13 @@ st.markdown(f"""
       <div class="ticker-company">{company}</div>
     </div>
   </div>
-  <div class="market-pill"><span class="market-dot"></span>DAILY CLOSE</div>
+  <div class="market-pill"><span class="market-dot"></span>{market_pill_label}</div>
 </div>
 """, unsafe_allow_html=True)
 
-tab_overview, tab_options, tab_more = st.tabs([
-    "Stock Prediction", "Options", "More"
+tab_overview, tab_signals, tab_risk, tab_options, tab_research = st.tabs([
+    "Overview", "Signals", "Risk", "Options", "Research"
 ])
-
-with tab_more:
-    tab_signals, tab_risk, tab_research = st.tabs(["Signals", "Risk", "Research"])
 
 with tab_signals:
     signal_trend, signal_momentum = st.tabs(["Trend", "Momentum"])
@@ -1133,36 +1136,37 @@ with tab_research:
     ])
 
 with tab_overview:
-    st.caption("Technical outlook based on historical prices, trend and volatility. Review the data date and watch zones before comparing an options idea.")
-    if cur < plan['stop']:
+    view_price = analysis_price
+    view_basis = 'extended-hours preview' if extended_active else 'latest close'
+    if view_price < plan['stop']:
         current_view = "RISK WARNING"
         view_class = "view-risk"
         price_guide = (
             "Price is below the risk-review level. Recheck the original idea and avoid "
             "treating a lower price as automatically safer."
         )
-    elif cur < plan['entry_low']:
+    elif view_price < plan['entry_low']:
         current_view = "WATCH FOR STABILITY"
         view_class = "view-wait"
         price_guide = (
             "Price is below the potential buy zone. A lower price is not automatically "
             "safer—wait for the price to stabilize before making a decision."
         )
-    elif cur <= plan['entry_high']:
+    elif view_price <= plan['entry_high']:
         current_view = "WATCH FOR ENTRY"
         view_class = "view-entry"
         price_guide = (
             "Price is inside the potential buy zone. Watch whether it holds this area; "
             "a zone is not a guarantee that the price will bounce."
         )
-    elif cur < plan['target_1']:
+    elif view_price < plan['target_1']:
         current_view = "WAIT"
         view_class = "view-wait"
         price_guide = (
             "Price is between the buy and sell watch zones. This is usually a wait-and-review "
             "area rather than an obvious entry or exit."
         )
-    elif cur <= plan['target_2']:
+    elif view_price <= plan['target_2']:
         current_view = "REVIEW PROFITS"
         view_class = "view-profit"
         price_guide = (
@@ -1177,13 +1181,28 @@ with tab_overview:
             "is higher; review the position instead of assuming it must keep rising."
         )
 
-    buy_pct_low = (plan['entry_low'] / cur - 1) * 100
-    buy_pct_high = (plan['entry_high'] / cur - 1) * 100
-    sell_pct_low = (plan['target_1'] / cur - 1) * 100
-    sell_pct_high = (plan['target_2'] / cur - 1) * 100
-    risk_pct = (plan['stop'] / cur - 1) * 100
-    buy_distance = f"{min(buy_pct_low, buy_pct_high):+.1f}% to {max(buy_pct_low, buy_pct_high):+.1f}% vs current"
-    sell_distance = f"{min(sell_pct_low, sell_pct_high):+.1f}% to {max(sell_pct_low, sell_pct_high):+.1f}% vs current"
+    buy_pct_low = (plan['entry_low'] / view_price - 1) * 100
+    buy_pct_high = (plan['entry_high'] / view_price - 1) * 100
+    sell_pct_low = (plan['target_1'] / view_price - 1) * 100
+    sell_pct_high = (plan['target_2'] / view_price - 1) * 100
+    risk_pct = (plan['stop'] / view_price - 1) * 100
+    distance_basis = 'after-hours price' if extended_active else 'latest close'
+    buy_distance = f"{min(buy_pct_low, buy_pct_high):+.1f}% to {max(buy_pct_low, buy_pct_high):+.1f}% vs {distance_basis}"
+    sell_distance = f"{min(sell_pct_low, sell_pct_high):+.1f}% to {max(sell_pct_low, sell_pct_high):+.1f}% vs {distance_basis}"
+    extended_card_html = ''
+    if extended_active:
+        extended_class = 'positive' if extended_change >= 0 else 'negative'
+        extended_card_html = f"""
+        <div class="session-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <div class="eyebrow">EXTENDED-HOURS PREVIEW</div>
+            <div class="session-live">{session_label}</div>
+          </div>
+          <div class="session-price">${analysis_price:.2f}</div>
+          <div class="{extended_class}">{extended_change:+.2f}% <span class="session-meta">vs official close · {extended_time_text}</span></div>
+          <div class="session-meta" style="margin-top:7px;">Used to preview distance from the watch zones. Trend, moving averages and official signals remain based on the completed regular session.</div>
+        </div>
+        """
 
     st.markdown(f"""
     <div class="price-panel">
@@ -1191,18 +1210,32 @@ with tab_overview:
       <div class="hero-price">${cur:.2f}</div>
       <div class="{change_class}">{chg_1d:+.2f}% <span class="mini-copy">last session</span></div>
     </div>
+    {extended_card_html}
     <div class="stat-grid">
       <div class="stat-cell"><div class="stat-label">Market structure</div><div class="stat-value">{regime}</div></div>
       <div class="stat-cell"><div class="stat-label">1-month move</div><div class="stat-value">{chg_20d:+.2f}%</div></div>
     </div>
     <div class="view-banner">
       <div class="view-copy">
-        <div class="eyebrow">Current view</div>
+        <div class="eyebrow">Current view · {view_basis}</div>
         <div class="view-description">{price_guide}</div>
       </div>
       <div class="view-badge {view_class}">{current_view}</div>
     </div>
     """, unsafe_allow_html=True)
+
+    if extended_active and not intraday.empty:
+        st.markdown(
+            '<div class="chart-hint">Extended-hours trades can be thin or volatile. '
+            'Drag to move · Use + / − to zoom</div>',
+            unsafe_allow_html=True,
+        )
+        extended_chart = build_extended_hours_chart(intraday, cur)
+        st.plotly_chart(extended_chart, width='stretch', config={
+            'displayModeBar': True, 'displaylogo': False, 'scrollZoom': False,
+            'doubleClick': 'reset+autosize', 'responsive': True,
+            'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'toggleSpikelines'],
+        })
 
     st.markdown(
         '<div class="chart-hint">Drag to move · Use + / − to zoom · '
@@ -1227,7 +1260,7 @@ with tab_overview:
     <div class="mobile-card" style="margin-top:7px;">
       <div class="eyebrow">If price falls below</div>
       <div class="value red">${plan['stop']:.2f}</div>
-      <div class="mini-copy">{risk_pct:+.1f}% vs current · Reconsider the idea and review risk.</div>
+      <div class="mini-copy">{risk_pct:+.1f}% vs {distance_basis} · Reconsider the idea and review risk.</div>
     </div>
     <div class="mobile-note">These ranges are calculated from recent price structure and volatility. They help users plan what to watch; they are not personalized advice, guaranteed prices or automatic orders.</div>
     """, unsafe_allow_html=True)
@@ -1319,304 +1352,400 @@ with tab_risk:
     """, unsafe_allow_html=True)
 
 with tab_options:
+    option_spot = analysis_price
+    option_spot_label = ('extended-hours stock price' if extended_active else 'latest regular close')
+    desired_days = {
+        'Tactical (1–10 days)': 30,
+        'Swing (2–8 weeks)': 75,
+        'Position (2–12 months)': 180,
+    }[horizon]
     st.markdown(f"""
     <div class="option-hero">
-      <div class="eyebrow">EXTENDS {safe_ticker}'S STOCK PREDICTION · NO TRADING</div>
-      <div class="option-hero-value">Explore a Call or Put</div>
-      <div class="option-hero-copy">Use the stock outlook as context, then compare it with option-market movement and your own price scenario. This app never places orders.</div>
+      <div class="eyebrow">OPTIONS LAB · BEGINNER MODE</div>
+      <div class="option-hero-value">What could I gain or lose?</div>
+      <div class="option-hero-copy">This page does not predict whether {safe_ticker} will rise or fall. It helps you test an idea and understand the cost, break-even price and worst case before taking any action.</div>
+    </div>
+    <div class="guide-steps">
+      <div class="guide-step"><div class="guide-number">1</div><div><div class="guide-title">Start with your opinion</div><div class="guide-copy">Use the Price and Trend pages first, then choose whether you think the stock may rise or fall.</div></div></div>
+      <div class="guide-step"><div class="guide-number">2</div><div><div class="guide-title">Choose how much time you want</div><div class="guide-copy">More time normally costs more. Very short expirations lose value faster.</div></div></div>
+      <div class="guide-step"><div class="guide-number">3</div><div><div class="guide-title">Read the four answers</div><div class="guide-copy">Focus on pay today, break-even price, maximum loss and maximum profit. Everything technical is optional.</div></div></div>
     </div>
     """, unsafe_allow_html=True)
 
+    if extended_active:
+        st.info(
+            f"{session_label.title()} stock price: ${option_spot:,.2f}. "
+            "Option premiums below may still be from the last option session. The app uses "
+            "the extended-hours stock price only for clearly labeled scenario estimates."
+        )
+
     option_session_key = f'options_loaded_{ticker}'
-    if st.button("Start volatility research", key=f'load_options_{ticker}',
+    if st.button("Start an options scenario", key=f'load_options_{ticker}',
                  type="primary", width="stretch"):
         st.session_state[option_session_key] = True
 
     if not st.session_state.get(option_session_key, False):
-        st.info("Tap **Start volatility research** to compare market movement and explore a call or put. Nothing here buys or sells anything.")
+        st.markdown("""
+        <div class="detail-card">
+          <div class="detail-row"><span>You will choose</span><b>Direction · Time · Risk style</b></div>
+          <div class="detail-row"><span>You will learn</span><b>Cost · Break-even · Max loss</b></div>
+          <div class="detail-row"><span>Trading</span><b>None — research only</b></div>
+        </div>
+        <div class="mobile-note">Quotes are loaded only when requested and may be delayed. Starting the scenario does not buy or sell anything.</div>
+        """, unsafe_allow_html=True)
     else:
         try:
             expirations = fetch_option_expirations(ticker)
             if not expirations:
                 raise ValueError('No listed option expirations were returned for this symbol.')
-            today = pd.Timestamp.now(tz='America/New_York').normalize().tz_localize(None)
             expiration_dates = [pd.Timestamp(value) for value in expirations]
+            today = pd.Timestamp.now().normalize()
             preferred = next(
-                (i for i, value in enumerate(expiration_dates) if (value - today).days >= 30),
+                (i for i, value in enumerate(expiration_dates)
+                 if (value - today).days >= desired_days),
                 len(expirations) - 1,
             )
-            ctrl1, ctrl2 = st.columns(2)
-            with ctrl1:
-                option_side = st.selectbox(
-                    "Call or put", ["Call", "Put"],
+
+            control_left, control_right = st.columns(2)
+            with control_left:
+                view_choice = st.selectbox(
+                    "1. What do you think may happen?",
+                    ["Price may rise", "Price may fall"],
+                    index=0 if regime in ('Uptrend', 'Recovery') or chg_20d >= 0 else 1,
                     key=f'option_view_{ticker}',
-                    help="This filters the option data. It is not a prediction about market direction.",
                 )
-            with ctrl2:
+                option_view = 'Bullish' if view_choice == "Price may rise" else 'Bearish'
+            with control_right:
                 expiration = st.selectbox(
-                    "Expiration date", expirations, index=preferred,
-                    format_func=lambda value: (lambda days: (
-                        f"{pd.Timestamp(value).strftime('%b %d, %Y')} · {days} {'day' if days == 1 else 'days'}" +
-                        (' · very short-term' if days <= 7 else '')
-                    ))(max(0, (pd.Timestamp(value) - today).days)),
+                    "2. How much time do you want?", expirations, index=preferred,
+                    format_func=lambda value: (
+                        f"{pd.Timestamp(value).strftime('%b %d, %Y')} · "
+                        f"{max(0, (pd.Timestamp(value) - today).days)} days"
+                    ),
                     key=f'option_expiration_{ticker}',
-                    help="This is the contract's end date. More time usually means a higher premium, all else equal.",
                 )
-            option_type = option_side.lower()
+            option_type = 'call' if option_view == 'Bullish' else 'put'
+            if option_type == 'call':
+                strategy_map = {
+                    "Buy a call · simpler, profit is not capped": "Long Call",
+                    "Call spread · lower cost, profit is capped": "Call Debit Spread",
+                }
+            else:
+                strategy_map = {
+                    "Buy a put · simpler, benefits from a decline": "Long Put",
+                    "Put spread · lower cost, profit is capped": "Put Debit Spread",
+                }
+            strategy_choice = st.selectbox(
+                "3. How do you want to limit the risk?", list(strategy_map),
+                key=f'option_strategy_{ticker}_{option_type}',
+            )
+            strategy = strategy_map[strategy_choice]
+            st.caption("A spread normally costs less, but it also limits how much you can make.")
             expiration_date = pd.Timestamp(expiration)
             dte = max(0, int((expiration_date - today).days))
-            stock_feed = app_setting('ALPACA_STOCK_FEED', 'sip').lower()
-            if stock_feed not in {'sip', 'iex'}:
-                raise RuntimeError('ALPACA_STOCK_FEED must be sip or iex.')
-            spot, stock_quote_time = fetch_alpaca_stock_quote(ticker, stock_feed)
             dividend = min(max(finite(info.get('dividendYield')), 0), .20)
             rate = .04
             chain = fetch_option_chain(ticker, expiration, option_type)
-            if chain.empty:
-                raise ValueError('No option contracts were returned for this expiration.')
             chain = enrich_option_chain(
-                chain, spot, dte, rate, dividend, option_type,
+                chain, option_spot, dte, rate, dividend, option_type,
                 max(risk['vol60'] / 100, .10),
             )
             chain['dte'] = dte
-            chain = chain.loc[
-                (chain['bid'] > 0) & (chain['ask'] >= chain['bid']) &
-                chain['strike'].between(spot * .65, spot * 1.35)
-            ].copy()
+            chain = chain.loc[(chain['mid'] > 0) & chain['strike'].between(option_spot * .65, option_spot * 1.35)].copy()
             if chain.empty:
-                raise ValueError('No usable two-sided option quotes were returned for this expiration.')
-            observed_iv = chain.loc[
-                chain['impliedVolatility'].notna() &
-                (chain['impliedVolatility'] > .01) &
-                chain['spreadPct'].notna() &
-                (chain['spreadPct'] <= 20)
-            ].copy()
-            expiry_iv = np.nan
-            expected_move = np.nan
-            if not observed_iv.empty:
-                atm_idx = (observed_iv['strike'] - spot).abs().idxmin()
-                expiry_iv = finite(observed_iv.loc[atm_idx, 'impliedVolatility'], np.nan)
-                if np.isfinite(expiry_iv) and expiry_iv > 0:
-                    expected_move = spot * expiry_iv * math.sqrt(max(dte, 1) / 365)
+                raise ValueError('No usable contracts with valid prices were returned for this expiration.')
+            chain['rank'] = (abs(chain['strike'] / option_spot - 1) +
+                             chain['spreadPct'].fillna(100).clip(0, 100) / 220 +
+                             np.where(chain['openInterest'] >= 100, 0, .20))
+            chain = chain.sort_values(['rank', 'strike'])
+            contracts = chain['contractSymbol'].astype(str).tolist()
 
-            st.subheader("1 · Expected movement")
-            st.caption("Past movement looks backward. The option estimate looks to this expiration. Neither predicts up or down.")
-            vol_cols = st.columns(2)
-            with vol_cols[0]:
-                st.metric("Recent volatility · 20 days", f"{risk['vol20']:.1f}%", help="Annualized measure of how much the stock has moved recently.")
-            with vol_cols[1]:
-                move_label = (f"±${expected_move:.2f} · about ±{expected_move / spot * 100:.1f}%"
-                              if np.isfinite(expected_move) and spot > 0 else "—")
-                st.metric("Expected move · to expiry", move_label,
-                          help="A rough size-of-move estimate based on option implied volatility. It gives no direction and is not a forecast.")
-            st.caption("Approximate range, not a direction or guarantee.")
+            selected_symbol = st.selectbox(
+                "4. Choose a strike price", contracts,
+                format_func=lambda symbol: (
+                    f"Strike ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
+                    f"about ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} per contract"
+                ),
+                key=f'option_contract_{ticker}_{expiration}_{option_type}',
+            )
+            long_row = chain.loc[chain['contractSymbol'].eq(selected_symbol)].iloc[0]
+            long_strike = finite(long_row['strike'])
+            long_mid = finite(long_row['mid'])
+            short_row = None
 
-            if observed_iv.empty:
-                st.info("No reliable option implied volatility was returned for this expiration. Try another expiration or check the options data access in your Alpaca plan.")
-
-            latest_quote = pd.to_datetime(chain['quoteTimestamp'], utc=True, errors='coerce').max()
-            quote_status = "Quote time unavailable"
-            if pd.notna(latest_quote):
-                age = max(0, (datetime.now(timezone.utc) - latest_quote.to_pydatetime()).total_seconds())
-                local_latest_quote = latest_quote.tz_convert('America/New_York')
-                quote_status = (
-                    ("Previous market data" if age > 120 else "Recent market data") +
-                    f" · options updated {local_latest_quote.strftime('%b %d, %I:%M %p ET')}"
-                )
-            st.caption(f"Stock reference {spot:.2f} · {quote_status} · Alpaca {app_setting('ALPACA_OPTIONS_FEED', 'opra').upper()} / {stock_feed.upper()}.")
-
-            if np.isfinite(expiry_iv):
-                if expiry_iv >= risk['vol20'] / 100 * 1.2:
-                    research_note = "Option prices imply more movement than the stock's recent 20-day history. This can happen around events; it does not by itself mean options are cheap or expensive."
-                elif expiry_iv <= risk['vol20'] / 100 * .8:
-                    research_note = "Option prices imply less movement than the stock's recent 20-day history. Implied and realized volatility look at different periods, so this is a comparison, not a prediction."
+            if 'Spread' in strategy:
+                if option_type == 'call':
+                    short_chain = chain.loc[chain['strike'] > long_strike].sort_values('strike')
+                    reference = plan['target_1']
                 else:
-                    research_note = "Option-implied and recent realized volatility are in a similar range. They measure different periods and neither tells us which way the stock may move."
+                    short_chain = chain.loc[chain['strike'] < long_strike].sort_values('strike', ascending=False)
+                    reference = plan['stop']
+                if short_chain.empty:
+                    raise ValueError('No compatible short leg was returned for this spread.')
+                short_symbols = short_chain['contractSymbol'].astype(str).tolist()
+                default_short = int(np.abs(short_chain['strike'].to_numpy() - reference).argmin())
+                with st.expander("Adjust the spread's profit cap (optional)", expanded=False):
+                    st.caption("The app has selected a second strike. Changing it changes both the cost and maximum profit.")
+                    short_symbol = st.selectbox(
+                        "Second strike", short_symbols, index=default_short,
+                        format_func=lambda symbol: (
+                            f"${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
+                            f"market value about ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f}"
+                        ),
+                        key=f'option_short_{ticker}_{expiration}_{option_type}',
+                    )
+                short_row = short_chain.loc[short_chain['contractSymbol'].eq(short_symbol)].iloc[0]
+
+            long_score, long_label, quality_notes = contract_quality(long_row, desired_days)
+            quality_score = long_score
+            if short_row is not None:
+                short_score, _, short_notes = contract_quality(short_row, desired_days)
+                quality_score = min(long_score, short_score)
+                quality_notes = list(dict.fromkeys(quality_notes + short_notes))
+                quality_label = ('Excellent' if quality_score >= 80 else 'Good' if quality_score >= 65
+                                 else 'Mixed' if quality_score >= 45 else 'Poor')
             else:
-                research_note = "There is not enough reliable implied-volatility data for a comparison. Use the recent movement figure as historical context only."
-            st.markdown(f"**Volatility read:** {research_note}")
-            st.caption("Automated from the displayed data—not an AI forecast or a buy/sell recommendation.")
+                quality_label = long_label
 
-            st.divider()
-            st.subheader("2 · Estimate cost & outcome")
-            st.caption("Choose a Call or Put strike, then test a possible stock price at expiry.")
-            available_strikes = sorted(chain['strike'].dropna().astype(float).unique().tolist())
-            default_strike = float(min(available_strikes, key=lambda value: abs(value - spot)))
-            strike_col, target_col = st.columns(2)
-            with strike_col:
-                selected_strike = st.selectbox(
-                    "Strike", available_strikes,
-                    index=available_strikes.index(default_strike),
-                    format_func=lambda value: f"${value:.2f}",
-                    key=f'study_strike_{ticker}_{expiration}_{option_type}',
-                    help="The strike is the price used to calculate the option's value at expiration.",
+            short_mid = finite(short_row['mid']) if short_row is not None else 0.0
+            short_strike = finite(short_row['strike']) if short_row is not None else 0.0
+            debit = long_mid - short_mid
+            if debit <= 0:
+                raise ValueError('The selected quote does not produce a positive debit. Try another contract.')
+            if option_type == 'call':
+                breakeven = long_strike + debit
+                width = short_strike - long_strike if short_row is not None else np.nan
+                max_profit = ((width - debit) * 100 if short_row is not None else np.inf)
+            else:
+                breakeven = long_strike - debit
+                width = long_strike - short_strike if short_row is not None else np.nan
+                max_profit = ((width - debit) * 100 if short_row is not None
+                              else max(0.0, breakeven) * 100)
+            max_loss = debit * 100
+            if short_row is not None and (width <= 0 or debit >= width):
+                raise ValueError('This spread quote has an invalid risk/reward width. Try another pair.')
+
+            iv = max(finite(long_row['modelIV']), .01)
+            iv_is_estimated = bool(long_row.get('ivEstimated', False))
+            iv_label = ('Historical-volatility estimate' if iv_is_estimated else 'Implied volatility')
+            net_delta = finite(long_row['delta']) - (finite(short_row['delta']) if short_row is not None else 0)
+            net_gamma = finite(long_row['gamma']) - (finite(short_row['gamma']) if short_row is not None else 0)
+            net_theta = finite(long_row['theta']) - (finite(short_row['theta']) if short_row is not None else 0)
+            net_vega = finite(long_row['vega']) - (finite(short_row['vega']) if short_row is not None else 0)
+            greeks_label = 'STRATEGY GREEKS' if short_row is not None else 'GREEKS · LONG LEG'
+            implied_move = option_spot * iv * math.sqrt(max(dte, 1) / 365)
+            spread_pct = finite(long_row['spreadPct'], 999)
+            spread_display = (f'{spread_pct:.1f}%' if np.isfinite(spread_pct) and spread_pct < 900
+                              else 'Unavailable')
+            score_notes = ' · '.join(quality_notes)
+            max_profit_text = 'Not capped' if np.isinf(max_profit) else f'${max_profit:,.0f}'
+            expiration_pretty = expiration_date.strftime('%b %d, %Y')
+            long_two_sided = (finite(long_row.get('bid')) > 0 and
+                              finite(long_row.get('ask')) >= finite(long_row.get('bid')))
+            short_two_sided = (short_row is None or
+                               (finite(short_row.get('bid')) > 0 and
+                                finite(short_row.get('ask')) >= finite(short_row.get('bid'))))
+            two_sided_quote = long_two_sided and short_two_sided
+            if short_row is None:
+                quote_low = finite(long_row.get('bid'))
+                quote_high = finite(long_row.get('ask'))
+            else:
+                quote_low = max(0.0, finite(long_row.get('bid')) - finite(short_row.get('ask')))
+                quote_high = max(0.0, finite(long_row.get('ask')) - finite(short_row.get('bid')))
+            quote_is_live = market_state == 'REGULAR'
+            suggested_limit_available = (quote_is_live and two_sided_quote and
+                                         spread_pct <= 20 and quality_score >= 45 and
+                                         quote_high >= debit > 0)
+            if suggested_limit_available:
+                purchase_title = f'Start near ${debit:.2f} with a limit order'
+                purchase_copy = (
+                    f'Current quoted range is ${quote_low:.2f}–${quote_high:.2f} per share '
+                    f'(${quote_low * 100:,.0f}–${quote_high * 100:,.0f} per contract). '
+                    'The midpoint is a starting reference, not a guaranteed execution price.'
                 )
-            listed_strike = float(selected_strike)
-            selected = chain.loc[np.isclose(chain['strike'], listed_strike)].iloc[0]
-            bid, ask = finite(selected['bid'], np.nan), finite(selected['ask'], np.nan)
-            quote_time = pd.to_datetime(selected['quoteTimestamp'], utc=True, errors='coerce')
-            if not np.isfinite(bid) or not np.isfinite(ask) or bid <= 0 or ask < bid or pd.isna(quote_time):
-                raise ValueError('This contract does not have a valid, timestamped two-sided quote. Try another strike.')
-            option_age = max(0, (datetime.now(timezone.utc) - quote_time.to_pydatetime()).total_seconds())
-            stock_age = max(0, (datetime.now(timezone.utc) - stock_quote_time).total_seconds())
-            quotes_fresh = max(option_age, stock_age) <= 120
-            with target_col:
-                target_price = st.number_input(
-                    "Stock price at expiry ($)", min_value=0.0,
-                    value=float(spot), step=1.0,
-                    key=f'hypothetical_price_{ticker}_{expiration}_{option_type}_{listed_strike}',
-                    help="Try a few prices to compare possible outcomes. This is your assumption, not a forecast.",
-                )
+                purchase_badge = 'LIVE QUOTE'
+            else:
+                purchase_title = 'No reliable purchase price right now'
+                if extended_active:
+                    purchase_copy = (
+                        f'The stock is using a {session_label.lower()} preview, but this option '
+                        'premium may be from the last option session. Wait for a fresh two-sided '
+                        'option quote before choosing a limit price.'
+                    )
+                elif market_state != 'REGULAR':
+                    purchase_copy = (
+                        'The option market is not in its regular session. The amount below is a '
+                        'scenario estimate, not a suggested order price.'
+                    )
+                else:
+                    purchase_copy = (
+                        'The quote is incomplete, too wide or lacks enough liquidity. The app '
+                        'will not manufacture a suggested limit price.'
+                    )
+                purchase_badge = 'WAIT FOR QUOTE'
+            move_to_breakeven = (breakeven / option_spot - 1) * 100
+            if option_type == 'call':
+                profit_condition = f'above ${breakeven:,.2f}'
+                move_explanation = f'{abs(move_to_breakeven):.1f}% above today' if move_to_breakeven >= 0 else f'{abs(move_to_breakeven):.1f}% below today'
+                plain_title = f'{safe_ticker} needs to finish above ${breakeven:,.2f}'
+                direction_copy = 'You selected a rising-price idea.'
+            else:
+                profit_condition = f'below ${breakeven:,.2f}'
+                move_explanation = f'{abs(move_to_breakeven):.1f}% below today' if move_to_breakeven <= 0 else f'{abs(move_to_breakeven):.1f}% above today'
+                plain_title = f'{safe_ticker} needs to finish below ${breakeven:,.2f}'
+                direction_copy = 'You selected a falling-price idea.'
+            st.markdown(f"""
+            <div class="plain-answer">
+              <div class="eyebrow">YOUR SCENARIO IN PLAIN ENGLISH</div>
+              <div class="plain-answer-title">{plain_title} on {expiration_pretty}</div>
+              <div class="plain-answer-copy">{direction_copy} At expiration, the stock must be {profit_condition} for this position to have a profit before fees. That break-even level is {move_explanation}. The cost and maximum loss below are estimates based on the latest available option quote.</div>
+              <span class="answer-chip">Stock now ${option_spot:,.2f}</span>
+              <span class="answer-chip green">Break-even ${breakeven:,.2f}</span>
+              <span class="answer-chip red">Max loss ${max_loss:,.0f}</span>
+            </div>
+            <div class="mobile-card" style="margin:8px 0;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <div><div class="eyebrow">PURCHASE PRICE CHECK</div><div class="value">{purchase_title}</div></div>
+                <span class="risk-defined">{purchase_badge}</span>
+              </div>
+              <div class="mini-copy" style="margin-top:7px;">{purchase_copy}</div>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-cell"><div class="stat-label">Scenario cost · 1 contract</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Needs to finish</div><div class="stat-value">{profit_condition}</div></div>
+              <div class="stat-cell"><div class="stat-label">Estimated maximum loss</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Most you can make</div><div class="stat-value">{max_profit_text}</div></div>
+            </div>
+            <div class="mobile-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <div><div class="eyebrow">QUOTE &amp; LIQUIDITY CHECK</div><div class="value">{quality_label} · {quality_score}/100</div></div>
+                <span class="risk-defined">LOSS CAPPED</span>
+              </div>
+              <div class="quality-bar"><div class="quality-fill" style="width:{quality_score}%;"></div></div>
+              <div class="mini-copy">This checks whether the quote may be costly or difficult to trade. It does not measure the chance of profit. {score_notes}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-            local_quote_time = quote_time.tz_convert('America/New_York')
-            if not quotes_fresh:
-                st.warning(f"Last available quote · {local_quote_time.strftime('%b %d, %I:%M %p ET')}. The figures below are for practice only—not current prices or an estimate of what an order would cost now.")
+            if quality_score < 45:
+                st.warning("This quote has weak liquidity or an unusually wide spread. The displayed cost may be hard to obtain in the market.")
 
-            entry_cost = ask * 100
-            fair_reference = ((bid + ask) / 2) * 100
-            breakeven = listed_strike + ask if option_type == 'call' else listed_strike - ask
-            intrinsic = max(target_price - listed_strike, 0) if option_type == 'call' else max(listed_strike - target_price, 0)
-            projected_pnl = (intrinsic - ask) * 100
-            st.markdown("**Your scenario · 1 contract (100 shares)**")
-            result_cols = st.columns(2)
-            with result_cols[0]:
-                cost_label = "Last-quote cost reference" if not quotes_fresh else "Estimated cost at Ask"
-                cost_help = ("Previous quote Ask × 100; illustrative only, not a current purchase price." if not quotes_fresh
-                             else "Uses the current seller's Ask × 100, before fees. Not a guaranteed execution price.")
-                st.metric(cost_label, f"${entry_cost:,.0f}", help=cost_help)
-            with result_cols[1]:
-                pnl_label = "Scenario result · last quote" if not quotes_fresh else "Possible result at expiration"
-                st.metric(pnl_label, f"${projected_pnl:+,.0f}", help="Your hypothetical stock price at expiration, minus the option premium reference, before fees.")
-            quote_label = "Last available quote" if not quotes_fresh else "Current quote"
-            st.caption(f"{quote_label} per share: Bid ${bid:.2f} · Ask ${ask:.2f} · midpoint ${((bid + ask) / 2):.2f}. Ask-based one-contract reference: ${entry_cost:,.0f}; midpoint reference: ${fair_reference:,.0f}.")
-            scenario_word = "gain" if projected_pnl > 0 else "loss" if projected_pnl < 0 else "break-even"
-            scenario_context = "using that old quote as the example entry" if not quotes_fresh else "using the current Ask as the example entry"
-            st.info(f"At your assumed ${target_price:.2f} stock price on expiration, this scenario shows an estimated {scenario_word} of ${abs(projected_pnl):,.0f} {scenario_context}, before fees. It is a calculation from your inputs, not a forecast or recommendation.")
-            spread_pct = finite(selected['spreadPct'], np.nan)
-            if np.isfinite(spread_pct) and spread_pct > 20:
-                st.warning(f"Wide spread ({spread_pct:.1f}%). The displayed cost may be less reliable.")
-            if finite(selected['openInterest']) < 100 or finite(selected['volume']) < 10:
-                st.info("Low recent trading activity or open interest. The contract may be harder to trade near the displayed quote.")
-            with st.expander("Break-even and maximum risk"):
-                max_gain = "Unlimited above break-even" if option_type == 'call' else f"Up to ${max(0, listed_strike * 100 - entry_cost):,.0f}"
-                st.write(f"**Break-even at expiration, using this premium:** ${breakeven:.2f}")
-                st.write(f"**Maximum loss for one contract:** ${entry_cost:,.0f} (premium reference, before fees)")
-                st.write(f"**Maximum gain:** {max_gain}")
-                st.caption("This payoff assumes you hold one long option until expiration. Before expiration, time and implied volatility can change its market price.")
-
-            with st.expander("Advanced details · quotes and definitions", expanded=False):
-                local_quote_time = quote_time.tz_convert('America/New_York')
+            with st.expander("Advanced option details · optional", expanded=False):
                 st.markdown(f"""
                 <div class="detail-card">
-                  <div class="detail-row"><span>Expiration</span><b>{expiration_date.strftime('%b %d, %Y')} · {dte} days</b></div>
-                  <div class="detail-row"><span>Selected contract</span><b>{option_side} · strike {listed_strike:.2f}</b></div>
-                  <div class="detail-row"><span>Bid / Ask</span><b>{bid:.2f} / {ask:.2f}</b></div>
-                  <div class="detail-row"><span>Option quote updated</span><b>{local_quote_time.strftime('%b %d, %I:%M:%S %p ET')}</b></div>
-                  <div class="detail-row"><span>Bid / Ask spread</span><b>{f'{finite(selected["spreadPct"], np.nan):.1f}%' if np.isfinite(finite(selected['spreadPct'], np.nan)) else 'Unavailable'}</b></div>
-                  <div class="detail-row"><span>Volume / open interest</span><b>{finite(selected['volume']):,.0f} / {finite(selected['openInterest']):,.0f}</b></div>
-                  <div class="detail-row"><span>Reported implied volatility at strike</span><b>{f'{finite(selected["impliedVolatility"]) * 100:.1f}%' if pd.notna(selected['impliedVolatility']) else 'Unavailable'}</b></div>
+                  <div class="detail-row"><span>Expiration</span><b>{expiration_pretty} · {dte} days</b></div>
+                  <div class="detail-row"><span>Bid / ask</span><b>${finite(long_row['bid']):.2f} / ${finite(long_row['ask']):.2f}</b></div>
+                  <div class="detail-row"><span>Cost between bid and ask</span><b>{spread_display}</b></div>
+                  <div class="detail-row"><span>Contracts traded / open</span><b>{finite(long_row['volume']):,.0f} / {finite(long_row['openInterest']):,.0f}</b></div>
+                  <div class="detail-row"><span>{iv_label}</span><b>{iv*100:.1f}%</b></div>
+                  <div class="detail-row"><span>Market-implied price range</span><b>${max(0, option_spot-implied_move):,.2f}–${option_spot+implied_move:,.2f}</b></div>
                 </div>
+                <div class="eyebrow" style="margin:16px 3px 8px;">{greeks_label}</div>
+                <div class="stat-grid">
+                  <div class="stat-cell"><div class="stat-label">Stock sensitivity · Delta</div><div class="stat-value">about ${net_delta * 100:+.0f} per $1 move</div></div>
+                  <div class="stat-cell"><div class="stat-label">Daily time effect · Theta</div><div class="stat-value">about ${net_theta * 100:+.0f}/day</div></div>
+                  <div class="stat-cell"><div class="stat-label">Delta change · Gamma</div><div class="stat-value">{net_gamma:.4f}</div></div>
+                  <div class="stat-cell"><div class="stat-label">Volatility effect · Vega</div><div class="stat-value">${net_vega * 100:.0f}/point</div></div>
+                </div>
+                <div class="mobile-note">These are changing model estimates, not promises. Delta means the estimated dollar change for one contract when the stock moves $1. Theta estimates one day of time loss, assuming other inputs stay the same.</div>
                 """, unsafe_allow_html=True)
-                st.markdown("**Call:** value can increase as the stock rises above the strike. **Put:** value can increase as the stock falls below the strike. **Break-even:** the expiration price where the estimated payoff equals the premium reference, before fees.")
-                st.caption("This simple payoff assumes you hold one long option to expiration. Before expiration, time and implied volatility can also change an option's market value.")
-                if not observed_iv.empty:
-                    curve = observed_iv.sort_values('strike').copy()
-                    curve['iv_pct'] = curve['impliedVolatility'] * 100
-                    fig_iv = go.Figure(go.Scatter(
-                        x=curve['strike'], y=curve['iv_pct'], mode='lines+markers',
-                        name='Implied volatility', line=dict(color='#7651e8', width=2),
-                        marker=dict(size=6), hovertemplate='Strike $%{x:.2f}<br>IV %{y:.1f}%<extra></extra>',
-                    ))
-                    fig_iv.add_vline(x=spot, line_dash='dash', line_color='#84ad19', annotation_text='Stock price')
-                    fig_iv.update_layout(title='Implied volatility by strike', height=230,
-                        margin=dict(l=8, r=8, t=42, b=8), paper_bgcolor='rgba(0,0,0,0)',
-                        plot_bgcolor='rgba(0,0,0,0)', showlegend=False,
-                        font=dict(color='#34343d', size=10), xaxis_title='Strike price',
-                        yaxis_title='Implied volatility (%)')
-                    fig_iv.update_yaxes(ticksuffix='%', gridcolor='#eeebf2')
-                    fig_iv.update_xaxes(tickprefix='$', gridcolor='#f3f1f5')
-                    st.plotly_chart(fig_iv, width='stretch', config={'displayModeBar': False})
+
+            earnings_value = info.get('earningsTimestamp')
+            try:
+                earnings_date = pd.to_datetime(float(earnings_value), unit='s').normalize()
+                if today <= earnings_date <= expiration_date:
+                    st.warning(f"Earnings are expected around {earnings_date.strftime('%b %d, %Y')}, before this option expires. IV and gap risk may be elevated.")
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+            max_scenario_days = max(dte, 1)
+            default_days = min(max_scenario_days, 7 if desired_days == 30 else 30 if desired_days == 75 else 60)
+            scenario_days = st.slider(
+                "What if this many days pass?", 0, max_scenario_days, default_days,
+                key=f'option_scenario_days_{ticker}_{expiration}_{selected_symbol}',
+            )
+            remaining_years = max(dte - scenario_days, 0) / 365
+            if option_type == 'call':
+                price_scenarios = [
+                    ('Falls to the risk level', plan['stop']),
+                    ('Stays near the current stock price', option_spot),
+                    ('Reaches the first upside level', plan['target_1']),
+                    ('Reaches the stretch level', plan['target_2']),
+                ]
+            else:
+                price_scenarios = [
+                    ('Falls to the lower reference', plan['stop']),
+                    ('Falls about 10%', option_spot * .90),
+                    ('Stays near the current stock price', option_spot),
+                    ('Rises about 5%', option_spot * 1.05),
+                ]
+            iv_scenarios = [('IV −20%', .80), ('IV unchanged', 1.00), ('IV +20%', 1.20)]
+            scenario_rows = []
+            for price_label, future_spot in price_scenarios:
+                values = []
+                for _, iv_factor in iv_scenarios:
+                    long_value = option_model(
+                        future_spot, long_strike, remaining_years, rate, dividend,
+                        max(iv * iv_factor, .01), option_type,
+                    )['price']
+                    short_value = 0.0
+                    if short_row is not None:
+                        short_iv = (iv if iv_is_estimated or bool(short_row.get('ivEstimated', False))
+                                    else max(finite(short_row['modelIV']), .01))
+                        short_value = option_model(
+                            future_spot, short_strike, remaining_years, rate, dividend,
+                            max(short_iv * iv_factor, .01), option_type,
+                        )['price']
+                    strategy_value = long_value - short_value
+                    if short_row is not None:
+                        strategy_value = min(max(strategy_value, 0.0), width)
+                    values.append((strategy_value - debit) * 100)
+                scenario_rows.append((price_label, future_spot, values))
+            table_rows = ''.join(
+                '<tr><td>{}</td><td>${:,.0f}</td>{}</tr>'.format(
+                    label, price,
+                    ''.join(f'<td>{value:+,.0f}</td>' for value in values),
+                )
+                for label, price, values in scenario_rows
+            )
+            simple_rows = ''.join(
+                '<div class="detail-row"><span>{} · stock ${:,.0f}</span><b>{:+,.0f}</b></div>'.format(
+                    label, price, values[1]
+                )
+                for label, price, values in scenario_rows
+            )
+            st.markdown(f"""
+            <div class="eyebrow" style="margin:16px 3px 7px;">WHAT-IF ESTIMATE AFTER {scenario_days} DAYS · 1 CONTRACT</div>
+            <div class="detail-card">
+              {simple_rows}
+            </div>
+            <div class="mobile-note">Positive numbers mean an estimated gain; negative numbers mean an estimated loss. These estimates assume volatility stays about the same and are not executable prices.</div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Advanced what-if table · volatility changes", expanded=False):
+                st.markdown(f"""
+                <div class="mobile-card" style="padding:6px 8px;overflow-x:auto;">
+                  <table class="option-table">
+                    <thead><tr><th>Stock case</th><th>Price</th><th>Volatility lower</th><th>About same</th><th>Volatility higher</th></tr></thead>
+                    <tbody>{table_rows}</tbody>
+                  </table>
+                </div>
+                <div class="mobile-note">Option prices can change even when the stock price does not. Higher volatility often raises option value; lower volatility often reduces it.</div>
+                """, unsafe_allow_html=True)
+
+            with st.expander("New investor help", expanded=False):
+                st.markdown("""
+**Call:** a position used when you think the stock may rise.  
+**Put:** a position used when you think the stock may fall.  
+**Strike:** the contract's reference price. It is not what you pay.  
+**Expiration:** the date the option ends. It can expire worthless.  
+**Break-even:** the stock price needed at expiration to recover the amount paid, before fees.  
+**Spread:** combines two options to reduce cost, while also limiting profit.
+
+Start with **what you pay** and **maximum loss**. If losing the entire amount would be unacceptable, the position is too large. The score on this page checks quote quality—not whether the trade will win.
+                """)
         except Exception as exc:
-            st.warning("Live option quotes are unavailable right now. You can still explore a rough scenario using the stock's recent historical volatility.")
-            # Keep the educational scenario usable when the options feed or stock
-            # quote endpoint fails. This is a model estimate, never a market quote.
-            spot = cur
-            fallback_vol = max(finite(risk.get('vol20')) / 100, .05)
-            fallback_dividend = min(max(finite(info.get('dividendYield')), 0), .20)
-            st.caption(
-                f"Using {ticker}'s latest daily close (${spot:.2f}, {data_as_of}) and "
-                f"20-day realized volatility ({fallback_vol * 100:.1f}% annualized)."
-            )
-            fallback_col1, fallback_col2 = st.columns(2)
-            with fallback_col1:
-                fallback_side = st.selectbox(
-                    "Call or put", ["Call", "Put"], key=f"fallback_side_{ticker}"
-                )
-            with fallback_col2:
-                fallback_days = st.selectbox(
-                    "Time horizon", [7, 14, 30, 60, 90, 180], index=2,
-                    format_func=lambda days: f"{days} days",
-                    key=f"fallback_days_{ticker}",
-                    help="A scenario horizon for the estimate; it is not a selected listed contract expiration.",
-                )
-            fallback_type = fallback_side.lower()
-            expected_move = spot * fallback_vol * math.sqrt(fallback_days / 252)
-            fallback_strike = st.number_input(
-                "Assumed strike price ($)", min_value=0.01,
-                value=float(round(spot, 2)), step=1.0,
-                key=f"fallback_strike_{ticker}_{fallback_side}_{fallback_days}",
-                help="This is an assumption for the model because a listed option chain could not be loaded.",
-            )
-            fallback_target = st.number_input(
-                "Your assumed stock price at the end ($)", min_value=0.0,
-                value=float(round(spot, 2)), step=1.0,
-                key=f"fallback_target_{ticker}_{fallback_side}_{fallback_days}",
-                help="Try different prices to see how the expiration payoff changes. This is your scenario, not a forecast.",
-            )
-            model_price = option_model(
-                spot, fallback_strike, fallback_days / 365, .04,
-                fallback_dividend, fallback_vol, fallback_type,
-            )['price']
-            model_cost = model_price * 100
-            fallback_intrinsic = (
-                max(fallback_target - fallback_strike, 0)
-                if fallback_type == 'call'
-                else max(fallback_strike - fallback_target, 0)
-            )
-            fallback_pnl = (fallback_intrinsic - model_price) * 100
-            fallback_breakeven = (
-                fallback_strike + model_price if fallback_type == 'call'
-                else fallback_strike - model_price
-            )
-            st.metric(
-                f"Historical-volatility move estimate · {fallback_days} days",
-                f"±${expected_move:.2f} · about ±{expected_move / spot * 100:.1f}%"
-                if spot > 0 else "Unavailable",
-                help="Uses past stock movement, not option-implied volatility. It gives no direction and is not a forecast.",
-            )
-            st.markdown("**Illustrative estimate · one contract (100 shares)**")
-            estimate_cols = st.columns(2)
-            with estimate_cols[0]:
-                st.metric("Model premium estimate", f"${model_cost:,.0f}",
-                          help="Black-Scholes estimate using recent historical volatility. This is not an ask price or a reliable purchase-cost quote.")
-            with estimate_cols[1]:
-                st.metric("Possible expiration result", f"${fallback_pnl:+,.0f}",
-                          help="Intrinsic value at your assumed end price minus the model premium estimate, before fees.")
-            st.caption(
-                f"Estimated break-even: ${fallback_breakeven:.2f} · "
-                f"Maximum loss in this simplified long-option model: ${model_cost:,.0f} before fees."
-            )
-            st.info(
-                f"At your assumed ${fallback_target:.2f} stock price after {fallback_days} days, "
-                f"the model shows ${fallback_pnl:+,.0f} for one contract. This is a rough scenario, "
-                "not a live quote, forecast, or recommendation. Actual option prices can differ substantially."
-            )
-            st.caption(
-                "Why the estimate is rough: realized volatility looks backward and can differ from "
-                "the volatility priced into options. The model also simplifies rates, dividends, "
-                "early exercise, and market supply and demand. Check a broker quote before using a price."
-            )
-            with st.expander("Why live option data did not load"):
+            st.error("Option-chain data is unavailable right now. The stock research pages still work normally.")
+            with st.expander("Options technical details"):
                 st.code(str(exc))
 
 with research_evidence:
