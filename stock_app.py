@@ -10,6 +10,7 @@ import html
 import io
 import json
 import math
+import textwrap
 from datetime import date
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
@@ -334,6 +335,16 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .session-meta { color:#bcb6c8; font-size:9px; line-height:1.5; }
 .session-live { display:inline-flex; align-items:center; gap:5px; color:#bce71d; font-size:9px; font-weight:800; }
 .session-live:before { content:''; width:6px; height:6px; border-radius:50%; background:#c8f51d; box-shadow:0 0 0 4px rgba(200,245,29,.12); }
+.next-plan { background:#fff; border:1px solid #e5e0ee; border-radius:18px; padding:14px; margin:9px 0 12px; box-shadow:0 7px 20px rgba(62,53,82,.05); }
+.next-plan-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:8px; }
+.next-plan-title { color:#171821; font-size:16px; font-weight:850; margin-top:3px; }
+.confidence-pill { flex:0 0 auto; color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; border-radius:999px; padding:5px 8px; font-size:8px; font-weight:800; }
+.plan-row { padding:10px 0; border-top:1px solid #ece9f0; }
+.plan-row-title { color:#24212d; font-size:10px; font-weight:800; }
+.plan-row-copy { color:#77717f; font-size:9px; line-height:1.5; margin-top:3px; }
+.readiness-good { color:#607d12; }
+.readiness-wait { color:#6942d2; }
+.readiness-risk { color:#c24453; }
 .stTabs [data-baseweb="tab-list"] { background:transparent; padding:0; border-radius:0; gap:22px; border-bottom:1px solid #e5e1ea; box-shadow:none; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
 .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
 .stTabs [data-baseweb="tab"] { background:transparent; border:0; color:#777181; border-radius:0; padding:10px 2px 12px; flex:0 0 auto; font-weight:650; }
@@ -1073,6 +1084,7 @@ session_label = state_map.get(market_state, 'CLOSED')
 extended_active = session_label in ('PRE-MARKET', 'AFTER HOURS', 'OVERNIGHT')
 extended_price = 0.0
 extended_timestamp = None
+intraday_age_minutes = np.nan
 if session_label == 'PRE-MARKET':
     extended_price = finite(info.get('preMarketPrice'))
     raw_timestamp = info.get('preMarketTime')
@@ -1109,6 +1121,40 @@ extended_change = (analysis_price / cur - 1) * 100 if cur else 0.0
 extended_time_text = (extended_timestamp.strftime('%b %d · %I:%M %p ET')
                       if extended_timestamp is not None else 'Latest available quote')
 market_pill_label = session_label if extended_active else ('LIVE MARKET' if market_state == 'REGULAR' else 'DAILY DATA')
+extended_volume = 0.0
+extended_volume_ratio = np.nan
+extended_bar_count = 0
+if extended_active and not intraday.empty:
+    session_tags = pd.Series(
+        [trading_session_label(pd.Timestamp(value)) for value in intraday.index],
+        index=intraday.index,
+    )
+    latest_session_date = intraday.index[-1].date()
+    current_session_mask = ((intraday.index.date == latest_session_date) &
+                            session_tags.eq(session_label).to_numpy())
+    current_session_bars = intraday.loc[current_session_mask]
+    extended_bar_count = len(current_session_bars)
+    extended_volume = finite(current_session_bars.get('Volume', pd.Series(dtype=float)).sum())
+    previous = intraday.loc[session_tags.eq(session_label)]
+    if not previous.empty and 'Volume' in previous.columns:
+        previous_daily_volume = previous.assign(
+            SessionDate=previous.index.date
+        ).groupby('SessionDate')['Volume'].sum()
+        previous_daily_volume = previous_daily_volume.loc[
+            previous_daily_volume.index != latest_session_date
+        ]
+        previous_median = finite(previous_daily_volume.median()) if not previous_daily_volume.empty else 0.0
+        if previous_median > 0:
+            extended_volume_ratio = extended_volume / previous_median
+if np.isfinite(intraday_age_minutes) and intraday_age_minutes <= 15 and extended_bar_count >= 3:
+    extended_confidence = 'Moderate'
+else:
+    extended_confidence = 'Limited'
+if np.isfinite(extended_volume_ratio):
+    participation_text = (f'{extended_volume_ratio:.1f}× recent {session_label.lower()} median'
+                          if extended_volume_ratio > 0 else 'No reported session volume')
+else:
+    participation_text = 'Not enough comparable sessions'
 
 st.markdown(f"""
 <div class="mobile-nav">
@@ -1190,9 +1236,10 @@ with tab_overview:
     buy_distance = f"{min(buy_pct_low, buy_pct_high):+.1f}% to {max(buy_pct_low, buy_pct_high):+.1f}% vs {distance_basis}"
     sell_distance = f"{min(sell_pct_low, sell_pct_high):+.1f}% to {max(sell_pct_low, sell_pct_high):+.1f}% vs {distance_basis}"
     extended_card_html = ''
+    next_session_html = ''
     if extended_active:
         extended_class = 'positive' if extended_change >= 0 else 'negative'
-        extended_card_html = f"""
+        extended_card_html = textwrap.dedent(f"""
         <div class="session-card">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
             <div class="eyebrow">EXTENDED-HOURS PREVIEW</div>
@@ -1202,7 +1249,63 @@ with tab_overview:
           <div class="{extended_class}">{extended_change:+.2f}% <span class="session-meta">vs official close · {extended_time_text}</span></div>
           <div class="session-meta" style="margin-top:7px;">Used to preview distance from the watch zones. Trend, moving averages and official signals remain based on the completed regular session.</div>
         </div>
-        """
+        """).strip()
+        if view_price < plan['stop']:
+            readiness_title = 'Risk review before considering an entry'
+            readiness_class = 'readiness-risk'
+            readiness_copy = (
+                'The extended-hours price is below the risk-review level. A lower price is not '
+                'automatically a better entry; wait for the regular session to reclaim the level.'
+            )
+        elif plan['entry_low'] <= view_price <= plan['entry_high']:
+            readiness_title = 'Inside the entry watch zone — confirmation still needed'
+            readiness_class = 'readiness-good'
+            readiness_copy = (
+                'The location is relevant, but an extended-hours trade is not confirmation. '
+                'Watch whether regular-session price holds the zone with a fresh two-sided quote.'
+            )
+        elif view_price < plan['entry_low']:
+            readiness_title = 'Below the planned entry zone — wait for stabilization'
+            readiness_class = 'readiness-risk'
+            readiness_copy = (
+                'Do not automatically move the entry zone lower. Look for a reclaim of the zone '
+                'or a new regular-session structure before reassessing.'
+            )
+        elif view_price < plan['target_1']:
+            readiness_title = 'Between the entry and profit zones — avoid chasing'
+            readiness_class = 'readiness-wait'
+            readiness_copy = (
+                'The stock is not near the planned entry. Let the next regular session show '
+                'whether price pulls back or builds a new base.'
+            )
+        elif view_price <= plan['target_2']:
+            readiness_title = 'Inside the profit-review zone'
+            readiness_class = 'readiness-wait'
+            readiness_copy = (
+                'If already holding, review whether to trim or protect gains. If not holding, '
+                'this is not an attractive place to chase a planned entry.'
+            )
+        else:
+            readiness_title = 'Above the planned profit zone — extended risk'
+            readiness_class = 'readiness-risk'
+            readiness_copy = (
+                'Momentum may continue, but the setup is stretched relative to the current map. '
+                'Wait for regular-session confirmation instead of assuming the gap will hold.'
+            )
+        volume_text = f'{extended_volume:,.0f} shares reported · {participation_text}'
+        next_session_html = textwrap.dedent(f"""
+        <div class="next-plan">
+          <div class="next-plan-head">
+            <div><div class="eyebrow">NEXT SESSION PLAN</div><div class="next-plan-title {readiness_class}">{readiness_title}</div></div>
+            <div class="confidence-pill">{extended_confidence.upper()} DATA CONFIDENCE</div>
+          </div>
+          <div class="mini-copy">{readiness_copy}</div>
+          <div class="plan-row"><div class="plan-row-title">If the next session opens inside ${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div><div class="plan-row-copy">Watch whether price holds the zone during the first 15–30 minutes. Use a fresh regular-session Bid/Ask before considering a limit price.</div></div>
+          <div class="plan-row"><div class="plan-row-title">If it opens above ${plan['entry_high']:.2f}</div><div class="plan-row-copy">Do not chase automatically. Wait for a pullback toward the planned zone or a new base supported by regular-session volume.</div></div>
+          <div class="plan-row"><div class="plan-row-title">If it opens below ${plan['stop']:.2f}</div><div class="plan-row-copy">Treat the original setup as needing review. Avoid calling the lower price a bargain until structure stabilizes.</div></div>
+          <div class="plan-row"><div class="plan-row-title">Extended-hours participation</div><div class="plan-row-copy">{volume_text}. Yahoo trade bars do not provide a consolidated live Bid/Ask, so confidence is capped below “High.”</div></div>
+        </div>
+        """).strip()
 
     st.markdown(f"""
     <div class="price-panel">
@@ -1211,6 +1314,7 @@ with tab_overview:
       <div class="{change_class}">{chg_1d:+.2f}% <span class="mini-copy">last session</span></div>
     </div>
     {extended_card_html}
+    {next_session_html}
     <div class="stat-grid">
       <div class="stat-cell"><div class="stat-label">Market structure</div><div class="stat-value">{regime}</div></div>
       <div class="stat-cell"><div class="stat-label">1-month move</div><div class="stat-value">{chg_20d:+.2f}%</div></div>

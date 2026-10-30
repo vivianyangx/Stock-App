@@ -4,6 +4,8 @@ A mobile-first Streamlit tracker for stock and ETF research. The beginner-friend
 
 The Overview page also requests recent five-minute bars with pre-market and after-hours data. A fresh extended-hours stock quote is shown as a separate preview and may be used to measure distance from the existing watch zones. Official trend, moving averages and technical signals remain anchored to the completed regular session.
 
+When a fresh extended-hours trade is available, **Next Session Plan** classifies the price as inside, below, between or above the existing watch zones. It provides conditional open scenarios, a regular-session confirmation checklist, reported extended-hours volume and a deliberately capped data-confidence label. It does not convert a thin after-hours trade into an automatic buy or sell signal.
+
 ## Run locally
 
 ```bash
