@@ -6,6 +6,10 @@ The Overview page also requests recent five-minute bars with pre-market and afte
 
 When a fresh extended-hours trade is available, **Next Session Plan** classifies the price as inside, below, between or above the existing watch zones. It provides conditional open scenarios, a regular-session confirmation checklist, reported extended-hours volume and a deliberately capped data-confidence label. It does not convert a thin after-hours trade into an automatic buy or sell signal.
 
+**News Signal** is a transparent first-pass noise filter. It deduplicates similar Yahoo headlines, tags common event types (earnings/guidance, M&A, legal/regulatory, leadership/capital and analyst actions), separates material events from general coverage, and checks whether the observed regular- or extended-session price move agrees with headline direction. The result is one of Confirmed positive, Confirmed negative, Positive/Negative unconfirmed, Mixed/contradicted, Likely noise or Insufficient evidence. This heuristic is not a trained forecast; historical-news walk-forward validation is still required before claiming higher predictive accuracy.
+
+The News page adds a beginner-facing **price scenario** for 1, 5 or 20 sessions. Its width comes from recent annualized volatility scaled by the square root of time. Confirmed positive or negative news applies only a small directional skew; noise or insufficient evidence falls back to a volatility-only range. The page compares this scenario with the technical price map and reported analyst targets, then explains how each reference should be used. These are scenario references—not probability bounds, fair value, a price forecast or a trade instruction—and the news adjustment is intentionally labeled as uncalibrated until historical-news walk-forward testing is completed.
+
 ## Run locally
 
 ```bash

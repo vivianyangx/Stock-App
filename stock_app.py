@@ -10,6 +10,7 @@ import html
 import io
 import json
 import math
+import re
 import textwrap
 from datetime import date
 from zoneinfo import ZoneInfo
@@ -345,6 +346,21 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .readiness-good { color:#607d12; }
 .readiness-wait { color:#6942d2; }
 .readiness-risk { color:#c24453; }
+.mobile-card .value.readiness-good { color:#607d12; }
+.mobile-card .value.readiness-wait { color:#6942d2; }
+.mobile-card .value.readiness-risk { color:#c24453; }
+.price-reference-grid { display:grid; grid-template-columns:1fr; gap:7px; margin:9px 0 12px; }
+.price-reference-card { background:#fff; border:1px solid #e8e4ef; border-radius:16px; padding:13px 14px; box-shadow:0 6px 18px rgba(62,53,82,.045); }
+.price-reference-card.active { border-color:#d9ccff; background:linear-gradient(145deg,#f4f0ff,#fff); }
+.reference-value { color:#171821; font-size:17px; font-weight:850; margin:5px 0 3px; }
+.reference-status { display:inline-block; border-radius:999px; padding:4px 7px; font-size:8px; font-weight:800; color:#6942d2; background:#f0ebff; }
+.scenario-answer { background:linear-gradient(145deg,#171620,#28223a); border-radius:19px; padding:15px; margin:9px 0 12px; color:#fff; }
+.scenario-answer .eyebrow { color:#aaa3bb; }
+.scenario-range { font-size:25px; font-weight:850; letter-spacing:-.8px; margin:4px 0; }
+.scenario-copy { color:#c1bbc9; font-size:9px; line-height:1.55; }
+.signal-step { display:flex; align-items:flex-start; gap:9px; padding:9px 0; border-top:1px solid #ece9f0; }
+.signal-step:first-child { border-top:0; }
+.signal-step-mark { width:20px; height:20px; flex:0 0 20px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#7045df; background:#eee8ff; font-size:9px; font-weight:850; }
 .stTabs [data-baseweb="tab-list"] { background:transparent; padding:0; border-radius:0; gap:22px; border-bottom:1px solid #e5e1ea; box-shadow:none; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
 .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
 .stTabs [data-baseweb="tab"] { background:transparent; border:0; color:#777181; border-radius:0; padding:10px 2px 12px; flex:0 0 auto; font-weight:650; }
@@ -754,11 +770,113 @@ def get_sentiment(ticker: str) -> tuple:
             if t:
                 p = TextBlob(t).sentiment.polarity
                 scores.append(p)
-                items.append({'title': t, 'polarity': p})
+                provider = c.get('provider', {}) if isinstance(c, dict) else {}
+                provider_name = (provider.get('displayName', '')
+                                 if isinstance(provider, dict) else str(provider or ''))
+                items.append({
+                    'title': t,
+                    'polarity': p,
+                    'provider': provider_name,
+                    'published': c.get('pubDate', '') if isinstance(c, dict) else '',
+                })
         avg = sum(scores) / len(scores) if scores else 0
         return avg, items
     except:
         return 0, []
+
+
+def build_news_signal(items: list[dict], market_reaction: float,
+                      reaction_threshold: float) -> dict:
+    """Heuristic news/noise classifier; deliberately not a trained forecast."""
+    event_groups = {
+        'Earnings / guidance': ['earnings', 'revenue', 'eps', 'guidance', 'forecast', 'outlook'],
+        'M&A': ['acquire', 'acquisition', 'merger', 'takeover', 'buyout'],
+        'Legal / regulatory': ['lawsuit', 'probe', 'investigation', 'antitrust', 'regulator', 'fda', 'sec '],
+        'Leadership / capital': ['ceo', 'resign', 'buyback', 'dividend', 'offering', 'layoff'],
+        'Analyst action': ['upgrade', 'downgrade', 'price target', 'initiates', 'rating'],
+    }
+    positive_terms = ['beat', 'beats', 'raise', 'raises', 'raised', 'approval', 'approved',
+                      'upgrade', 'buyback', 'record', 'growth', 'profit']
+    negative_terms = ['miss', 'misses', 'cut', 'cuts', 'lower', 'downgrade', 'lawsuit',
+                      'probe', 'investigation', 'decline', 'loss', 'layoff', 'resign']
+    seen_tokens = []
+    enriched = []
+    for raw in items:
+        title = str(raw.get('title') or '')
+        lower = title.lower()
+        tokens = set(re.findall(r'[a-z0-9]+', lower)) - {
+            'the', 'a', 'an', 'to', 'of', 'for', 'and', 'in', 'on', 'with', 'is', 'as'
+        }
+        similarity = max(
+            ((len(tokens & previous) / max(1, len(tokens | previous))) for previous in seen_tokens),
+            default=0.0,
+        )
+        duplicate = similarity >= .62
+        seen_tokens.append(tokens)
+        event_type = 'General coverage'
+        for label, keywords in event_groups.items():
+            if any(keyword in lower for keyword in keywords):
+                event_type = label
+                break
+        material = event_type in {'Earnings / guidance', 'M&A', 'Legal / regulatory',
+                                  'Leadership / capital'}
+        lexical = sum(term in lower for term in positive_terms) - sum(
+            term in lower for term in negative_terms
+        )
+        polarity = finite(raw.get('polarity'))
+        direction_score = polarity + (.18 if lexical > 0 else -.18 if lexical < 0 else 0)
+        enriched.append({**raw, 'duplicate': duplicate, 'event_type': event_type,
+                         'material': material, 'direction_score': direction_score})
+
+    if not enriched:
+        return {'label': 'Insufficient evidence', 'css': 'readiness-wait', 'strength': 'Limited',
+                'impact': 'No adjustment', 'copy': 'No analyzable headlines were returned.',
+                'items': [], 'noise_score': 100, 'unique': 0, 'material': 0,
+                'reaction': market_reaction, 'confirmed': False}
+    unique_items = [item for item in enriched if not item['duplicate']]
+    material_count = sum(item['material'] for item in unique_items)
+    analyst_count = sum(item['event_type'] == 'Analyst action' for item in unique_items)
+    weights = [1.5 if item['material'] else 1.0 if item['event_type'] == 'Analyst action' else .6
+               for item in unique_items]
+    weighted_direction = (sum(item['direction_score'] * weight
+                              for item, weight in zip(unique_items, weights)) /
+                          max(sum(weights), .01))
+    direction = 1 if weighted_direction > .09 else -1 if weighted_direction < -.09 else 0
+    reaction_direction = (1 if market_reaction >= reaction_threshold else
+                          -1 if market_reaction <= -reaction_threshold else 0)
+    confirmed = direction != 0 and reaction_direction == direction
+    contradicted = direction != 0 and reaction_direction == -direction
+    duplicate_ratio = sum(item['duplicate'] for item in enriched) / len(enriched)
+    general_ratio = sum(item['event_type'] == 'General coverage' for item in unique_items) / max(1, len(unique_items))
+    noise_score = int(np.clip(35 + duplicate_ratio * 40 + general_ratio * 25 -
+                              material_count * 18 - analyst_count * 5 -
+                              (15 if confirmed else 0), 0, 100))
+    if material_count == 0 and noise_score >= 65:
+        label, css, impact = 'Likely noise', 'readiness-wait', 'Keep the existing price plan'
+        copy = 'Most headlines appear repetitive, general or unconfirmed by price.'
+    elif contradicted:
+        label, css, impact = 'Mixed / contradicted', 'readiness-risk', 'Reduce trend confidence'
+        copy = 'Headline direction and the observed market reaction disagree.'
+    elif confirmed and direction > 0:
+        label, css, impact = 'Confirmed positive', 'readiness-good', 'Supports the bullish case'
+        copy = 'Relevant headlines and the observed price reaction point in the same positive direction.'
+    elif confirmed and direction < 0:
+        label, css, impact = 'Confirmed negative', 'readiness-risk', 'Review downside risk'
+        copy = 'Relevant headlines and the observed price reaction point in the same negative direction.'
+    elif direction > 0:
+        label, css, impact = 'Positive · unconfirmed', 'readiness-wait', 'Wait for price confirmation'
+        copy = 'Headline direction is positive, but the observed price move has not confirmed it.'
+    elif direction < 0:
+        label, css, impact = 'Negative · unconfirmed', 'readiness-wait', 'Watch for downside confirmation'
+        copy = 'Headline direction is negative, but the observed price move has not confirmed it.'
+    else:
+        label, css, impact = 'Mixed / neutral', 'readiness-wait', 'No change to the price plan'
+        copy = 'The available headlines do not point in a consistent direction.'
+    strength = 'Moderate' if material_count > 0 or confirmed else 'Limited'
+    return {'label': label, 'css': css, 'strength': strength, 'impact': impact,
+            'copy': copy, 'items': enriched, 'noise_score': noise_score,
+            'unique': len(unique_items), 'material': material_count,
+            'reaction': market_reaction, 'confirmed': confirmed}
 
 
 def score_summary(sig, chg, sent, atr_pct) -> tuple:
@@ -1050,6 +1168,10 @@ week_high = finite(info.get('fiftyTwoWeekHigh'), df['High'].tail(252).max())
 week_low = finite(info.get('fiftyTwoWeekLow'), df['Low'].tail(252).min())
 pe = finite(info.get('trailingPE'))
 beta = finite(info.get('beta'))
+analyst_target_low = finite(info.get('targetLowPrice'))
+analyst_target_mean = finite(info.get('targetMeanPrice'))
+analyst_target_high = finite(info.get('targetHighPrice'))
+analyst_opinions = int(finite(info.get('numberOfAnalystOpinions')))
 day_low = finite(df['Low'].iloc[-1])
 day_high = finite(df['High'].iloc[-1])
 data_as_of = pd.Timestamp(df.index[-1]).strftime('%b %d, %Y')
@@ -1155,6 +1277,13 @@ if np.isfinite(extended_volume_ratio):
                           if extended_volume_ratio > 0 else 'No reported session volume')
 else:
     participation_text = 'Not enough comparable sessions'
+news_market_reaction = extended_change if extended_active else chg_1d
+news_reaction_basis = session_label.lower() if extended_active else 'latest regular session'
+news_signal = build_news_signal(
+    news_items,
+    news_market_reaction,
+    reaction_threshold=max(.75, atr_p * .35),
+)
 
 st.markdown(f"""
 <div class="mobile-nav">
@@ -1306,6 +1435,16 @@ with tab_overview:
           <div class="plan-row"><div class="plan-row-title">Extended-hours participation</div><div class="plan-row-copy">{volume_text}. Yahoo trade bars do not provide a consolidated live Bid/Ask, so confidence is capped below “High.”</div></div>
         </div>
         """).strip()
+    news_signal_html = textwrap.dedent(f"""
+    <div class="mobile-card" style="margin:9px 0 12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div><div class="eyebrow">NEWS SIGNAL · HEURISTIC</div><div class="value {news_signal['css']}">{news_signal['label']}</div></div>
+        <div class="confidence-pill">{news_signal['strength'].upper()} EVIDENCE</div>
+      </div>
+      <div class="mini-copy" style="margin-top:7px;">{news_signal['copy']} <b>{news_signal['impact']}.</b></div>
+      <div class="mini-copy" style="margin-top:6px;">Noise {news_signal['noise_score']}/100 · {news_signal['unique']} unique headlines · {news_signal['material']} material events · market reaction {news_market_reaction:+.2f}% ({news_reaction_basis})</div>
+    </div>
+    """).strip()
 
     st.markdown(f"""
     <div class="price-panel">
@@ -1313,8 +1452,9 @@ with tab_overview:
       <div class="hero-price">${cur:.2f}</div>
       <div class="{change_class}">{chg_1d:+.2f}% <span class="mini-copy">last session</span></div>
     </div>
-    {extended_card_html}
-    {next_session_html}
+{extended_card_html}
+{next_session_html}
+{news_signal_html}
     <div class="stat-grid">
       <div class="stat-cell"><div class="stat-label">Market structure</div><div class="stat-value">{regime}</div></div>
       <div class="stat-cell"><div class="stat-label">1-month move</div><div class="stat-value">{chg_20d:+.2f}%</div></div>
@@ -1901,27 +2041,129 @@ with research_company:
     """, unsafe_allow_html=True)
 
 with research_news:
-    sentiment_label = "Positive" if sent_avg > .1 else "Negative" if sent_avg < -.1 else "Neutral"
     st.markdown(f"""
     <div class="price-panel">
-      <div class="eyebrow">HEADLINE PULSE</div>
-      <div class="hero-price" style="font-size:25px;">{sentiment_label}</div>
-      <div class="mini-copy">Average polarity {sent_avg:+.3f} · {len(news_items)} English-language headlines</div>
+      <div class="eyebrow">NEWS SIGNAL · NOISE FILTER</div>
+      <div class="hero-price {news_signal['css']}" style="font-size:25px;">{news_signal['label']}</div>
+      <div class="mini-copy">{news_signal['copy']}</div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">Noise score</div><div class="stat-value">{news_signal['noise_score']}/100</div></div>
+      <div class="stat-cell"><div class="stat-label">Evidence strength</div><div class="stat-value">{news_signal['strength']}</div></div>
+      <div class="stat-cell"><div class="stat-label">Unique headlines</div><div class="stat-value">{news_signal['unique']}</div></div>
+      <div class="stat-cell"><div class="stat-label">Material events</div><div class="stat-value">{news_signal['material']}</div></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-row"><span>Effect on current view</span><b>{news_signal['impact']}</b></div>
+      <div class="detail-row"><span>Observed market reaction</span><b>{news_market_reaction:+.2f}% · {news_reaction_basis}</b></div>
+      <div class="detail-row"><span>Price confirmation</span><b>{'Yes' if news_signal['confirmed'] else 'Not confirmed'}</b></div>
+      <div class="detail-row"><span>Model status</span><b>Heuristic · not yet backtested</b></div>
     </div>
     """, unsafe_allow_html=True)
-    if news_items:
-        for item in news_items[:8]:
-            polarity = finite(item['polarity'])
-            title = html.escape(str(item['title']))
-            tone = "Positive" if polarity > .1 else "Negative" if polarity < -.1 else "Neutral"
-            st.markdown(f"""
-            <div class="detail-card">
-              <div style="font-size:11px;color:#171821;line-height:1.45;padding:7px 0;">{title}</div>
-              <div class="mini-copy" style="padding-bottom:7px;">{tone} · {polarity:+.3f}</div>
-            </div>""", unsafe_allow_html=True)
+
+    horizon_choice = st.selectbox(
+        "Price scenario horizon",
+        ["1 session", "5 sessions", "20 sessions"],
+        index=1,
+        key=f'news_scenario_horizon_{ticker}',
+    )
+    scenario_sessions = {"1 session": 1, "5 sessions": 5, "20 sessions": 20}[horizon_choice]
+    scenario_vol = max(risk['vol20'] / 100, .10)
+    modeled_move = analysis_price * scenario_vol * math.sqrt(scenario_sessions / 252)
+    shift_factors = {
+        'Confirmed positive': .25,
+        'Confirmed negative': -.25,
+        'Positive · unconfirmed': .10,
+        'Negative · unconfirmed': -.10,
+    }
+    shift_factor = shift_factors.get(news_signal['label'], 0.0)
+    scenario_center = max(.01, analysis_price + modeled_move * shift_factor)
+    scenario_low = max(.01, scenario_center - modeled_move)
+    scenario_high = scenario_center + modeled_move
+    if news_signal['label'] in ('Insufficient evidence', 'Likely noise'):
+        scenario_status = 'Volatility-only fallback'
+        scenario_bias = 'No news adjustment'
+        scenario_explanation = (
+            'The app does not have enough confirmed news evidence to shift the range. '
+            'This is a volatility scenario around the current stock price.'
+        )
+    elif news_signal['label'] == 'Confirmed positive':
+        scenario_status = 'News-confirmed scenario'
+        scenario_bias = 'Positive skew'
+        scenario_explanation = (
+            'The range is modestly tilted upward because headline direction and price reaction agree.'
+        )
+    elif news_signal['label'] == 'Confirmed negative':
+        scenario_status = 'News-confirmed scenario'
+        scenario_bias = 'Negative skew'
+        scenario_explanation = (
+            'The range is modestly tilted downward because headline direction and price reaction agree.'
+        )
     else:
-        st.info("No analyzable headlines were returned.")
-    st.markdown('<div class="mobile-note">Headline polarity is a rough language score. It does not judge source quality, materiality, novelty or whether the information is already reflected in price.</div>', unsafe_allow_html=True)
+        scenario_status = 'Unconfirmed scenario'
+        scenario_bias = ('Positive skew' if shift_factor > 0 else
+                         'Negative skew' if shift_factor < 0 else 'No directional skew')
+        scenario_explanation = (
+            'The headline signal is mixed or unconfirmed, so any directional adjustment remains small.'
+        )
+    analyst_reference_available = (analyst_target_low > 0 and analyst_target_high >= analyst_target_low)
+    analyst_reference_value = (f'${analyst_target_low:,.2f}–${analyst_target_high:,.2f}'
+                               if analyst_reference_available else 'Unavailable')
+    analyst_reference_copy = (
+        f'Mean ${analyst_target_mean:,.2f} · {analyst_opinions} reported opinions. Not a live fair-value model.'
+        if analyst_reference_available and analyst_target_mean > 0
+        else 'No usable analyst target range was returned for this symbol.'
+    )
+    st.markdown(f"""
+    <div class="scenario-answer">
+      <div class="eyebrow">NEWS-INFORMED SCENARIO · {horizon_choice.upper()}</div>
+      <div class="scenario-range">${scenario_low:,.2f}–${scenario_high:,.2f}</div>
+      <div class="scenario-copy">{scenario_status} · {scenario_bias}<br>{scenario_explanation}</div>
+    </div>
+    <div class="price-reference-grid">
+      <div class="price-reference-card">
+        <div class="eyebrow">1 · TECHNICAL PRICE MAP</div>
+        <div class="reference-value">Entry ${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div>
+        <div class="mini-copy">Profit-review ${plan['target_1']:.2f}–${plan['target_2']:.2f} · Risk review below ${plan['stop']:.2f}</div>
+      </div>
+      <div class="price-reference-card active">
+        <div class="eyebrow">2 · NEWS SCENARIO RANGE</div>
+        <div class="reference-value">${scenario_low:,.2f}–${scenario_high:,.2f}</div>
+        <span class="reference-status">{scenario_status.upper()}</span>
+        <div class="mini-copy" style="margin-top:6px;">Based on ${analysis_price:,.2f} spot, {scenario_vol * 100:.1f}% historical volatility and the current News Signal.</div>
+      </div>
+      <div class="price-reference-card">
+        <div class="eyebrow">3 · ANALYST REFERENCE · NOT FAIR VALUE</div>
+        <div class="reference-value">{analyst_reference_value}</div>
+        <div class="mini-copy">{analyst_reference_copy}</div>
+      </div>
+    </div>
+    <div class="mobile-card">
+      <div class="eyebrow">HOW TO USE THESE NUMBERS</div>
+      <div class="signal-step"><div class="signal-step-mark">1</div><div><div class="plan-row-title">Start with the technical map</div><div class="plan-row-copy">It organizes current support, profit-review and risk levels.</div></div></div>
+      <div class="signal-step"><div class="signal-step-mark">2</div><div><div class="plan-row-title">Use news as a confidence layer</div><div class="plan-row-copy">Confirmed news may skew the short-horizon scenario; noise should not change the plan.</div></div></div>
+      <div class="signal-step"><div class="signal-step-mark">3</div><div><div class="plan-row-title">Do not confuse targets with fair value</div><div class="plan-row-copy">A true fair-value model needs forecast revenue, margins, cash flow and valuation assumptions. This app does not calculate that yet.</div></div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Headline evidence", expanded=False):
+        if news_signal['items']:
+            for item in news_signal['items'][:10]:
+                polarity = finite(item['polarity'])
+                title = html.escape(str(item['title']))
+                tone = "Positive" if polarity > .1 else "Negative" if polarity < -.1 else "Neutral"
+                event_type = html.escape(str(item.get('event_type') or 'General coverage'))
+                provider_name = html.escape(str(item.get('provider') or 'Unknown source'))
+                novelty = 'Repeated / similar' if item.get('duplicate') else 'Unique headline'
+                materiality = 'Material event' if item.get('material') else 'Context / commentary'
+                st.markdown(f"""
+                <div class="detail-card">
+                  <div style="font-size:11px;color:#171821;line-height:1.45;padding:7px 0;">{title}</div>
+                  <div class="mini-copy" style="padding-bottom:7px;">{event_type} · {materiality} · {novelty}<br>{provider_name} · language tone {tone} ({polarity:+.3f})</div>
+                </div>""", unsafe_allow_html=True)
+        else:
+            st.info("No analyzable headlines were returned.")
+    st.markdown('<div class="mobile-note">This range is an experimental scenario, not a forecast or fair-value estimate. The directional skew is intentionally small and has not been calibrated on historical news. Historical-news walk-forward testing is required before claiming improved accuracy.</div>', unsafe_allow_html=True)
 
 # ── Tracking disclaimer ───────────────────────────────────────
 st.markdown(
