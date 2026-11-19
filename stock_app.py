@@ -13,6 +13,7 @@ import math
 import re
 import textwrap
 from datetime import date
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -22,6 +23,14 @@ import pandas as pd
 import numpy as np
 from textblob import TextBlob
 import plotly.graph_objects as go
+
+try:
+    from ml_engine import load_artifact, predict_latest, sector_symbol_for
+    ML_ENGINE_AVAILABLE = True
+except Exception:
+    ML_ENGINE_AVAILABLE = False
+
+MODEL_ARTIFACT_PATH = Path(__file__).resolve().parent / "model_artifacts" / "professional_v1.json"
 
 # ── Page config ──────────────────────────────────────────────
 st.set_page_config(
@@ -361,6 +370,23 @@ div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8
 .signal-step { display:flex; align-items:flex-start; gap:9px; padding:9px 0; border-top:1px solid #ece9f0; }
 .signal-step:first-child { border-top:0; }
 .signal-step-mark { width:20px; height:20px; flex:0 0 20px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#7045df; background:#eee8ff; font-size:9px; font-weight:850; }
+.model-gate { background:linear-gradient(145deg,#171620,#28223a); border-radius:20px; padding:16px; color:#fff; margin:9px 0 12px; box-shadow:0 12px 28px rgba(35,29,53,.15); }
+.model-gate .eyebrow { color:#aaa3bb; }
+.model-gate-status { color:#c8f51d; font-size:22px; font-weight:850; letter-spacing:-.6px; margin:5px 0; }
+.model-gate-status.blocked { color:#ff8995; }
+.model-gate-copy { color:#c1bbc9; font-size:10px; line-height:1.55; }
+.model-health { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:9px 0; }
+.source-state { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 0; border-top:1px solid #ece9f0; }
+.source-state:first-child { border-top:0; }
+.source-state-name { color:#24212d; font-size:10px; font-weight:750; }
+.source-state-copy { color:#85808f; font-size:9px; margin-top:2px; }
+.source-state-pill { flex:0 0 auto; border-radius:999px; padding:4px 7px; font-size:8px; font-weight:850; }
+.source-state-pill.ready { color:#607d12; background:#f0f7d9; }
+.source-state-pill.missing { color:#bf4554; background:#fff0f1; }
+.driver-row { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-top:1px solid #ece9f0; font-size:10px; }
+.driver-row:first-child { border-top:0; }
+.driver-supportive { color:#607d12; font-weight:750; }
+.driver-caution { color:#c24453; font-weight:750; }
 .stTabs [data-baseweb="tab-list"] { background:transparent; padding:0; border-radius:0; gap:22px; border-bottom:1px solid #e5e1ea; box-shadow:none; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
 .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
 .stTabs [data-baseweb="tab"] { background:transparent; border:0; color:#777181; border-radius:0; padding:10px 2px 12px; flex:0 0 auto; font-weight:650; }
@@ -1082,6 +1108,38 @@ def data_quality(frame: pd.DataFrame) -> dict:
     }
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_ml_outlook(ticker: str, sector_name: str, spot: float) -> dict:
+    """Load benchmark histories and run the frozen, audited research artifact."""
+    if not ML_ENGINE_AVAILABLE or not MODEL_ARTIFACT_PATH.exists():
+        raise RuntimeError('Professional ML model files are not installed.')
+    artifact = load_artifact(MODEL_ARTIFACT_PATH)
+    stock = fetch_data(ticker, period='5y')
+    spy = stock if ticker == 'SPY' else fetch_data('SPY', period='5y')
+    qqq = stock if ticker == 'QQQ' else fetch_data('QQQ', period='5y')
+    sector_symbol = sector_symbol_for(ticker, sector_name)
+    if sector_symbol == ticker:
+        sector = stock
+    elif sector_symbol == 'SPY':
+        sector = spy
+    elif sector_symbol == 'QQQ':
+        sector = qqq
+    else:
+        sector = fetch_data(sector_symbol, period='5y')
+    predictions = predict_latest(artifact, stock, spy, qqq, sector, spot)
+    return {
+        'artifact': artifact,
+        'predictions': predictions,
+        'sector_symbol': sector_symbol,
+        'benchmark_dates': {
+            'stock': pd.Timestamp(stock.index[-1]).strftime('%b %d, %Y'),
+            'spy': pd.Timestamp(spy.index[-1]).strftime('%b %d, %Y'),
+            'qqq': pd.Timestamp(qqq.index[-1]).strftime('%b %d, %Y'),
+            'sector': pd.Timestamp(sector.index[-1]).strftime('%b %d, %Y'),
+        },
+    }
+
+
 # ── Mobile-first application ──────────────────────────────────
 if 'ticker_input' not in st.session_state:
     st.session_state.ticker_input = 'META'
@@ -1298,8 +1356,8 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_overview, tab_signals, tab_risk, tab_options, tab_research = st.tabs([
-    "Overview", "Signals", "Risk", "Options", "Research"
+tab_overview, tab_signals, tab_model, tab_risk, tab_options, tab_research = st.tabs([
+    "Overview", "Signals", "Model", "Risk", "Options", "Research"
 ])
 
 with tab_signals:
@@ -1309,6 +1367,158 @@ with tab_research:
     research_evidence, research_company, research_news = st.tabs([
         "Evidence", "Company", "News"
     ])
+
+with tab_model:
+    st.markdown("""
+    <div class="price-panel">
+      <div class="eyebrow">MODEL CHECK · RESEARCH ONLY</div>
+      <div class="hero-price" style="font-size:25px;">Can this model help right now?</div>
+      <div class="mini-copy">We test the model on historical periods it did not see before. If the result is no better than a simple guess, the app tells you not to use it for a trading decision.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    model_session_key = f'ml_outlook_ready_{ticker}'
+    if st.button("Check model reliability", key=f'run_ml_{ticker}', type="primary", width="stretch"):
+        st.session_state[model_session_key] = True
+
+    if not st.session_state.get(model_session_key, False):
+        st.markdown("""
+        <div class="mobile-card">
+          <div class="eyebrow">WHAT HAPPENS AFTER YOU PRESS THE BUTTON</div>
+          <div class="signal-step"><div class="signal-step-mark">1</div><div><div class="plan-row-title">Read today's market information</div><div class="plan-row-copy">The app checks price, volume, the broad market and the stock's sector.</div></div></div>
+          <div class="signal-step"><div class="signal-step-mark">2</div><div><div class="plan-row-title">Check whether the model has worked before</div><div class="plan-row-copy">It tests the model on later historical periods that were not used for training.</div></div></div>
+          <div class="signal-step"><div class="signal-step-mark">3</div><div><div class="plan-row-title">Give you a clear answer</div><div class="plan-row-copy">If the model is not dependable, the app says so instead of suggesting a trade.</div></div></div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        try:
+            with st.spinner("Checking the model against unseen history…"):
+                ml_package = fetch_ml_outlook(ticker, str(info.get('sector') or ''), cur)
+            ml_horizon_label = st.selectbox(
+                "How far ahead should the model check?",
+                ["1 day · Tomorrow", "5 days · About one week", "20 days · About one month"],
+                index=1,
+                key=f'ml_horizon_{ticker}',
+            )
+            ml_horizon = int(ml_horizon_label.split()[0])
+            ml_result = ml_package['predictions'][ml_horizon]
+            ml_metrics = ml_result['metrics']
+            ml_gate_pass = not str(ml_result['quality']).startswith('No stable')
+            ml_extrapolative = ticker not in ml_package['artifact']['training_universe']
+            news_overlay_pp = {
+                'Confirmed positive': 3.0, 'Confirmed negative': -3.0,
+                'Positive · unconfirmed': 1.0, 'Negative · unconfirmed': -1.0,
+            }.get(news_signal['label'], 0.0)
+            if ml_extrapolative:
+                gate_status = 'This stock is outside the trained list'
+                gate_class = 'blocked'
+                gate_copy = (
+                    f'{ticker} was not one of the 24 stocks and ETFs used to train and test this model. '
+                    'The app can read its current market data, but it should not produce a prediction '
+                    'until this ticker is added to training and the model is tested again.'
+                )
+                direction_summary = 'Not tested for this stock'
+                decision_summary = 'No'
+                examples_label = 'Model-wide examples'
+                improvement_label = 'Model-wide result'
+                improvement_value = 'About 50/50'
+                bottom_line = f'Bottom line: add {ticker} to the historical training set and retrain before showing a probability.'
+            elif ml_gate_pass:
+                gate_status = 'Early research signal available'
+                gate_class = ''
+                gate_copy = (
+                    f"The model showed some historical improvement. Its early estimate is a "
+                    f"{ml_result['up_probability']:.0%} chance of a positive return over this period, "
+                    "but it is still research—not a buy or sell instruction."
+                )
+                direction_summary = f"{ml_metrics['balanced_accuracy']:.1%} in testing"
+                decision_summary = 'Research only'
+                examples_label = 'Historical examples checked'
+                improvement_label = 'Years it improved'
+                improvement_value = f"{int(ml_metrics['positive_brier_skill_folds'])} of {int(ml_metrics['folds'])}"
+                bottom_line = 'Bottom line: this remains an early research signal and should not replace the price or risk plan.'
+            else:
+                gate_status = 'Not reliable enough yet'
+                gate_class = 'blocked'
+                gate_copy = (
+                    'Do not use this model to decide whether to buy or sell. In unseen historical periods, '
+                    'its direction calls were roughly 50/50—similar to a coin flip. Your existing price and '
+                    'risk plan should stay unchanged.'
+                )
+                direction_summary = 'About 50/50'
+                decision_summary = 'No'
+                examples_label = 'Historical examples checked'
+                improvement_label = 'Years it improved'
+                improvement_value = f"{int(ml_metrics['positive_brier_skill_folds'])} of {int(ml_metrics['folds'])}"
+                bottom_line = 'Bottom line: more data and another round of testing are needed before this model should influence an investment decision.'
+            st.markdown(f"""
+            <div class="model-gate">
+              <div class="eyebrow">ANSWER · {ml_horizon_label.upper()}</div>
+              <div class="model-gate-status {gate_class}">{gate_status}</div>
+              <div class="model-gate-copy">{gate_copy}</div>
+            </div>
+            <div class="model-health">
+              <div class="stat-cell"><div class="stat-label">Direction test</div><div class="stat-value">{direction_summary}</div></div>
+              <div class="stat-cell"><div class="stat-label">Use for buy / sell?</div><div class="stat-value">{decision_summary}</div></div>
+              <div class="stat-cell"><div class="stat-label">{examples_label}</div><div class="stat-value">{int(ml_metrics['observations']):,}</div></div>
+              <div class="stat-cell"><div class="stat-label">{improvement_label}</div><div class="stat-value">{improvement_value}</div></div>
+            </div>
+            <div class="mobile-note">{bottom_line}</div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="mobile-card">
+              <div class="eyebrow">WHAT THE MODEL USES TODAY</div>
+              <div class="source-state"><div><div class="source-state-name">Price, volume &amp; market trend</div><div class="source-state-copy">{safe_ticker}, S&amp;P 500, Nasdaq and {ml_package['sector_symbol']} through {ml_result['feature_date']}.</div></div><span class="source-state-pill {'missing' if ml_extrapolative else 'ready'}">{'CURRENT DATA ONLY' if ml_extrapolative else 'INCLUDED'}</span></div>
+              <div class="source-state"><div><div class="source-state-name">Historical news reactions</div><div class="source-state-copy">Needed to learn whether similar news changed prices in the past.</div></div><span class="source-state-pill missing">STILL NEEDED</span></div>
+              <div class="source-state"><div><div class="source-state-name">Earnings and company events</div><div class="source-state-copy">Needed to measure earnings surprises and major SEC filings.</div></div><span class="source-state-pill missing">STILL NEEDED</span></div>
+              <div class="source-state"><div><div class="source-state-name">Options market expectations</div><div class="source-state-copy">Needed to learn from implied volatility, skew and open interest.</div></div><span class="source-state-pill missing">STILL NEEDED</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+            with st.expander("Technical validation details", expanded=False):
+                st.markdown(f"""
+                <div class="detail-card">
+                  <div class="detail-row"><span>Balanced accuracy</span><b>{ml_metrics['balanced_accuracy']:.1%}</b></div>
+                  <div class="detail-row"><span>Brier skill vs. baseline</span><b>{ml_metrics['brier_skill']:+.2%}</b></div>
+                  <div class="detail-row"><span>Return correlation</span><b>{ml_metrics['return_correlation']:+.3f}</b></div>
+                  <div class="detail-row"><span>Walk-forward years</span><b>2021–2025</b></div>
+                </div>
+                <div class="mobile-note">Balanced accuracy measures direction after accounting for up/down imbalance. Brier skill measures probability quality versus a simple historical base rate. These details are for model review, not everyday investing.</div>
+                """, unsafe_allow_html=True)
+            if ml_result['outlier_features']:
+                st.warning(f"{ml_result['outlier_features']} current factors are outside three training standard deviations. Treat raw output as out-of-distribution.")
+
+            if ml_extrapolative:
+                st.info(f"No experimental probability is shown for {ticker} because it was not part of the trained universe.")
+            else:
+                with st.expander("See the experimental estimate · not a recommendation", expanded=False):
+                    adjusted_probability = float(np.clip(
+                        ml_result['up_probability'] + news_overlay_pp / 100, .01, .99
+                    ))
+                    st.markdown(f"""
+                    <div class="stat-grid">
+                      <div class="stat-cell"><div class="stat-label">Base up probability</div><div class="stat-value">{ml_result['up_probability']:.1%}</div></div>
+                      <div class="stat-cell"><div class="stat-label">Expected return</div><div class="stat-value">{ml_result['expected_return']:+.2%}</div></div>
+                      <div class="stat-cell"><div class="stat-label">OOS residual scenario</div><div class="stat-value">${ml_result['range_low']:,.2f}–${ml_result['range_high']:,.2f}</div></div>
+                      <div class="stat-cell"><div class="stat-label">Current news overlay</div><div class="stat-value">{news_overlay_pp:+.1f} pp</div></div>
+                    </div>
+                    <div class="detail-card">
+                      <div class="detail-row"><span>Base ML probability</span><b>{ml_result['up_probability']:.1%}</b></div>
+                      <div class="detail-row"><span>Preview with news overlay</span><b>{adjusted_probability:.1%}</b></div>
+                      <div class="detail-row"><span>News status</span><b>{news_signal['label']}</b></div>
+                      <div class="detail-row"><span>Model trained through</span><b>{ml_package['artifact']['data_through']}</b></div>
+                    </div>
+                    <div class="mobile-note">The news overlay is deliberately separated because it has not been trained on a historical news archive. It is not part of the walk-forward score and must not be presented as validated probability.</div>
+                    """, unsafe_allow_html=True)
+                    st.markdown('<div class="eyebrow" style="margin:13px 3px 7px;">LARGEST MODEL CONTRIBUTIONS</div>', unsafe_allow_html=True)
+                    driver_html = ''.join(
+                        f'<div class="driver-row"><span>{html.escape(str(driver["label"]))}</span><span class="driver-{driver["direction"]}">{driver["direction"].upper()}</span></div>'
+                        for driver in ml_result['drivers']
+                    )
+                    st.markdown(f'<div class="mobile-card">{driver_html}</div>', unsafe_allow_html=True)
+        except Exception as exc:
+            st.error("The audited model could not run with the currently available benchmark data.")
+            with st.expander("Technical details"):
+                st.code(str(exc))
 
 with tab_overview:
     view_price = analysis_price
