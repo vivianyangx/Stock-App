@@ -1,0 +1,2386 @@
+"""
+Stock Intelligence Platform
+Professional-grade stock analysis web app built with Streamlit
+"""
+
+import warnings
+warnings.filterwarnings('ignore')
+
+import html
+import io
+import json
+import math
+import re
+import textwrap
+from datetime import date
+from pathlib import Path
+from zoneinfo import ZoneInfo
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from textblob import TextBlob
+import plotly.graph_objects as go
+
+try:
+    from ml_engine import load_artifact, predict_latest, sector_symbol_for
+    ML_ENGINE_AVAILABLE = True
+except Exception:
+    ML_ENGINE_AVAILABLE = False
+
+MODEL_ARTIFACT_PATH = Path(__file__).resolve().parent / "model_artifacts" / "professional_v1.json"
+
+# ── Page config ──────────────────────────────────────────────
+st.set_page_config(
+    page_title="Investor Research",
+    page_icon="◈",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# ── Global CSS ────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Dark background */
+.stApp { background-color: #0a0e1a; }
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: #0d1321;
+    border-right: 1px solid #1e2d45;
+}
+[data-testid="stSidebar"] * { color: #94a3b8 !important; }
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 { color: #e2e8f0 !important; }
+
+/* Metric cards */
+.metric-card {
+    background: linear-gradient(135deg, #0d1321 0%, #111827 100%);
+    border: 1px solid #1e2d45;
+    border-radius: 12px;
+    padding: 20px 24px;
+    text-align: left;
+    transition: border-color 0.2s;
+}
+.metric-card:hover { border-color: #334155; }
+.metric-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-bottom: 8px;
+}
+.metric-value {
+    font-size: 26px;
+    font-weight: 700;
+    color: #f1f5f9;
+    line-height: 1;
+}
+.metric-sub {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 6px;
+}
+
+/* Verdict banner */
+.verdict-banner {
+    border-radius: 12px;
+    padding: 22px 32px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin: 16px 0;
+    border: 1px solid;
+}
+.verdict-buy  { background: rgba(16,185,129,0.08); border-color: rgba(16,185,129,0.3); }
+.verdict-sell { background: rgba(239,68,68,0.08);  border-color: rgba(239,68,68,0.3); }
+.verdict-hold { background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.3); }
+.verdict-wait { background: rgba(100,116,139,0.08);border-color: rgba(100,116,139,0.3);}
+
+.verdict-score {
+    font-size: 42px;
+    font-weight: 800;
+    line-height: 1;
+}
+.verdict-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #f1f5f9;
+}
+.verdict-desc { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+
+/* Signal pills */
+.signal-pill {
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.pill-buy  { background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.3); }
+.pill-sell { background: rgba(239,68,68,0.15);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+.pill-wait { background: rgba(100,116,139,0.15);color: #94a3b8; border: 1px solid rgba(100,116,139,0.3);}
+
+/* Section header */
+.section-header {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #475569;
+    margin: 28px 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #1e2d45;
+}
+
+/* News item */
+.news-item {
+    background: #0d1321;
+    border: 1px solid #1e2d45;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+}
+.news-title { font-size: 13px; color: #cbd5e1; line-height: 1.5; }
+.news-meta  { font-size: 11px; color: #475569; margin-top: 4px; }
+
+/* Trading plan */
+.plan-card {
+    background: linear-gradient(145deg, #0d1321 0%, #111827 100%);
+    border: 1px solid #1e2d45;
+    border-radius: 14px;
+    padding: 20px;
+    min-height: 138px;
+}
+.plan-kicker {
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.3px;
+    text-transform: uppercase;
+}
+.plan-price { color: #f8fafc; font-size: 25px; font-weight: 750; margin: 8px 0 5px; }
+.plan-copy { color: #94a3b8; font-size: 12px; line-height: 1.55; }
+.factor-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 9px 0;
+    border-bottom: 1px solid rgba(30,45,69,.72);
+    color: #94a3b8;
+    font-size: 12px;
+}
+.factor-row:last-child { border-bottom: 0; }
+.factor-value { color: #e2e8f0; font-weight: 600; text-align: right; }
+.disclaimer {
+    background: rgba(59,130,246,.06);
+    border: 1px solid rgba(59,130,246,.18);
+    border-radius: 10px;
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.65;
+    padding: 13px 16px;
+}
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0 30px;
+}
+.brand-lockup { display: flex; align-items: center; gap: 14px; }
+.brand-mark {
+    width: 44px; height: 44px; border-radius: 13px;
+    display: grid; place-items: center;
+    background: linear-gradient(145deg, #7ce7d1, #44cdb4);
+    color: #07131c; font-size: 18px; font-weight: 800;
+    box-shadow: 0 10px 28px rgba(68,205,180,.16);
+}
+.brand-name { color: #f8fafc; font-size: 17px; font-weight: 750; }
+.brand-line { color: #64748b; font-size: 11px; margin-top: 3px; }
+.data-badge {
+    border: 1px solid rgba(94,234,212,.28);
+    border-radius: 999px; padding: 7px 12px;
+    color: #5eead4; font-size: 10px; font-weight: 750;
+    letter-spacing: 1.2px;
+}
+.data-dot { color: #5eead4; margin-right: 6px; }
+
+/* Streamlit controls */
+.stTabs [data-baseweb="tab-list"] { gap: 8px; }
+.stTabs [data-baseweb="tab"] {
+    background: #0d1321;
+    border: 1px solid #1e2d45;
+    border-radius: 8px;
+    color: #94a3b8;
+    padding: 8px 16px;
+}
+.stTabs [aria-selected="true"] { color: #f8fafc !important; border-color: #3b82f6 !important; }
+
+@media (max-width: 900px) {
+    .metric-value { font-size: 20px; }
+    .verdict-banner { padding: 18px; gap: 12px; }
+    .verdict-score { font-size: 34px; }
+}
+
+/* Reduce Streamlit branding while preserving the mobile sidebar control */
+#MainMenu, footer { visibility: hidden; }
+header { background: transparent !important; }
+.block-container { padding-top: 24px; }
+
+/* Mobile investing app shell */
+.stApp {
+    background:
+        radial-gradient(circle at 18% 12%, rgba(125,93,236,.10), transparent 28%),
+        radial-gradient(circle at 82% 78%, rgba(173,219,54,.10), transparent 25%),
+        #e9ebe2;
+    color: #171522;
+}
+[data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
+.block-container {
+    max-width: 480px !important;
+    margin: 24px auto 48px;
+    padding: 20px 18px 30px !important;
+    background: #fbfbf8;
+    border: 1px solid rgba(70,57,108,.10);
+    border-radius: 34px;
+    box-shadow: 0 30px 80px rgba(48,42,68,.16);
+}
+.mobile-nav {
+    display:flex; align-items:center; justify-content:space-between;
+    margin:2px 2px 18px; padding:11px 12px;
+    background:rgba(255,255,255,.82); border:1px solid #e7e3ef;
+    border-radius:18px; box-shadow:0 8px 24px rgba(67,55,101,.07);
+}
+.ticker-identity { display:flex; align-items:center; gap:10px; min-width:0; }
+.ticker-monogram {
+    width:38px; height:38px; border-radius:12px; flex:0 0 auto;
+    display:grid; place-items:center; color:white; font-size:12px; font-weight:850;
+    background:linear-gradient(145deg,#7651e8,#9575ef);
+    box-shadow:0 8px 18px rgba(111,74,232,.24);
+}
+.ticker-lockup { text-align:left; min-width:0; }
+.ticker-name { font-size:15px; color:#171522; font-weight:850; letter-spacing:.25px; }
+.ticker-company { font-size:10px; color:#8a8498; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:210px; }
+.market-pill {
+    display:flex; align-items:center; gap:6px; flex:0 0 auto;
+    padding:7px 9px; border-radius:999px; background:#f2f8df;
+    border:1px solid #dcebb3; color:#617b19;
+    font-size:8px; font-weight:800; letter-spacing:.7px;
+}
+.market-dot { width:6px; height:6px; border-radius:50%; background:#95c824; box-shadow:0 0 0 3px rgba(149,200,36,.14); }
+.search-label { color:#827b90; font-size:9px; font-weight:800; letter-spacing:.9px; margin:2px 3px 6px; }
+div[data-testid="stForm"] { border:0 !important; padding:0 !important; margin:0 0 10px !important; }
+div[data-testid="stTextInput"] input { background:#fff; border:1px solid #ded9e8; border-radius:999px; min-height:45px; padding-left:17px; box-shadow:0 5px 16px rgba(62,53,82,.04); }
+.view-banner { display:flex; align-items:center; justify-content:space-between; gap:12px; background:#fff; border:1px solid #e8e4ef; border-radius:16px; padding:12px 14px; margin:8px 0 12px; box-shadow:0 6px 18px rgba(62,53,82,.045); }
+.view-copy { min-width:0; }
+.view-title { color:#171522; font-size:15px; font-weight:850; margin-top:3px; }
+.view-description { color:#85808f; font-size:9px; line-height:1.45; margin-top:4px; }
+.view-badge { flex:0 0 auto; border-radius:999px; padding:7px 10px; font-size:9px; font-weight:850; letter-spacing:.45px; }
+.view-wait { color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; }
+.view-entry { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; }
+.view-profit { color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; }
+.view-risk { color:#c24453; background:#fff0f1; border:1px solid #ffd7dc; }
+.chart-hint { color:#85808f; font-size:9px; line-height:1.45; margin:5px 3px 8px; }
+.price-panel {
+    background:linear-gradient(145deg,#f1edff 0%,#f7f6fb 58%,#f4f8e9 100%);
+    border:1px solid #e6e0f5; border-radius:20px; padding:17px 17px; margin-bottom:10px;
+    box-shadow:0 10px 28px rgba(89,66,145,.07);
+}
+.eyebrow { color:#827b90; font-size:9px; font-weight:750; text-transform:uppercase; letter-spacing:.85px; }
+.hero-price { color:#11121a; font-size:32px; font-weight:800; letter-spacing:-1.4px; margin:3px 0 2px; }
+.positive { color:#6c00f5; font-weight:700; }
+.negative { color:#ef6170; font-weight:700; }
+.mini-copy { color:#85858e; font-size:10px; }
+.stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:8px 0 12px; }
+.stat-cell { background:#fff; border:1px solid #e9e6ef; border-radius:14px; padding:11px 12px; min-height:58px; box-shadow:0 5px 16px rgba(62,53,82,.04); }
+.stat-label { color:#8b8b93; font-size:9px; margin-bottom:5px; }
+.stat-value { color:#171821; font-size:13px; font-weight:750; }
+.dark-chart-title { color:#f6f6fa; font-size:12px; font-weight:700; }
+.plan-strip { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:8px 0; }
+.mobile-card { background:#fff; border:1px solid #e8e4ef; border-radius:16px; padding:13px 14px; box-shadow:0 6px 18px rgba(62,53,82,.045); }
+.mobile-card .value { color:#161720; font-size:18px; font-weight:800; margin-top:5px; }
+.mobile-card .value.lime { color:#84ad19; }
+.mobile-card .value.purple { color:#7045df; }
+.mobile-card .value.red { color:#ef6170; }
+.detail-card { background:#fff; border:1px solid #e8e4ef; border-radius:16px; padding:6px 14px; margin:8px 0; box-shadow:0 6px 18px rgba(62,53,82,.04); }
+.detail-row { display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid #d9d9df; font-size:11px; color:#777780; }
+.detail-row:last-child { border-bottom:0; }
+.detail-row b { color:#171821; font-weight:650; text-align:right; }
+.mobile-note { color:#85808f; font-size:10px; line-height:1.55; padding:8px 3px; }
+.option-hero { background:linear-gradient(145deg,#171620,#242033); border-radius:20px; padding:17px; color:white; margin:8px 0 12px; box-shadow:0 12px 28px rgba(35,29,53,.16); }
+.option-hero .eyebrow { color:#b9b1ca; }
+.option-hero-value { font-size:22px; font-weight:800; margin:4px 0; }
+.option-hero-copy { color:#b9b1ca; font-size:10px; line-height:1.5; }
+.quality-bar { height:7px; border-radius:999px; background:#ebe8f0; overflow:hidden; margin:8px 0 5px; }
+.quality-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#7651e8,#c8f51d); }
+.option-table { width:100%; border-collapse:collapse; margin:8px 0; font-size:10px; }
+.option-table th { text-align:left; color:#85808f; font-weight:650; padding:8px 6px; border-bottom:1px solid #e4e1e9; }
+.option-table td { color:#292733; padding:9px 6px; border-bottom:1px solid #efedf2; }
+.option-table td:not(:first-child), .option-table th:not(:first-child) { text-align:right; }
+.risk-defined { color:#607d12; background:#f2f8df; border:1px solid #dcebb3; border-radius:999px; padding:5px 8px; font-size:9px; font-weight:800; }
+.guide-steps { display:grid; gap:7px; margin:9px 0 13px; }
+.guide-step { display:flex; gap:11px; align-items:flex-start; background:#fff; border:1px solid #e8e4ef; border-radius:15px; padding:11px 12px; }
+.guide-number { width:25px; height:25px; flex:0 0 25px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:#eee8ff; color:#7045df; font-size:11px; font-weight:850; }
+.guide-title { color:#1b1922; font-size:11px; font-weight:800; margin-bottom:2px; }
+.guide-copy { color:#85808f; font-size:9px; line-height:1.45; }
+.plain-answer { background:linear-gradient(145deg,#f0ebff,#faf9fd 62%,#f4f8e9); border:1px solid #e2d8ff; border-radius:18px; padding:15px; margin:10px 0; }
+.plain-answer-title { color:#191720; font-size:16px; line-height:1.3; font-weight:850; margin:4px 0 6px; }
+.plain-answer-copy { color:#696572; font-size:10px; line-height:1.55; }
+.answer-chip { display:inline-block; border-radius:999px; padding:5px 8px; margin:7px 4px 0 0; color:#5c3abc; background:#eee8ff; font-size:9px; font-weight:750; }
+.answer-chip.green { color:#607d12; background:#f0f7d9; }
+.answer-chip.red { color:#bf4554; background:#fff0f1; }
+.session-card { background:linear-gradient(145deg,#171620,#272238); border-radius:18px; padding:14px 15px; color:#fff; margin:8px 0 12px; box-shadow:0 10px 24px rgba(35,29,53,.14); }
+.session-card .eyebrow { color:#aaa3bb; }
+.session-price { font-size:23px; font-weight:850; letter-spacing:-.7px; margin:4px 0 2px; }
+.session-meta { color:#bcb6c8; font-size:9px; line-height:1.5; }
+.session-live { display:inline-flex; align-items:center; gap:5px; color:#bce71d; font-size:9px; font-weight:800; }
+.session-live:before { content:''; width:6px; height:6px; border-radius:50%; background:#c8f51d; box-shadow:0 0 0 4px rgba(200,245,29,.12); }
+.next-plan { background:#fff; border:1px solid #e5e0ee; border-radius:18px; padding:14px; margin:9px 0 12px; box-shadow:0 7px 20px rgba(62,53,82,.05); }
+.next-plan-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:8px; }
+.next-plan-title { color:#171821; font-size:16px; font-weight:850; margin-top:3px; }
+.confidence-pill { flex:0 0 auto; color:#6942d2; background:#f0ebff; border:1px solid #ddd2ff; border-radius:999px; padding:5px 8px; font-size:8px; font-weight:800; }
+.plan-row { padding:10px 0; border-top:1px solid #ece9f0; }
+.plan-row-title { color:#24212d; font-size:10px; font-weight:800; }
+.plan-row-copy { color:#77717f; font-size:9px; line-height:1.5; margin-top:3px; }
+.readiness-good { color:#607d12; }
+.readiness-wait { color:#6942d2; }
+.readiness-risk { color:#c24453; }
+.mobile-card .value.readiness-good { color:#607d12; }
+.mobile-card .value.readiness-wait { color:#6942d2; }
+.mobile-card .value.readiness-risk { color:#c24453; }
+.price-reference-grid { display:grid; grid-template-columns:1fr; gap:7px; margin:9px 0 12px; }
+.price-reference-card { background:#fff; border:1px solid #e8e4ef; border-radius:16px; padding:13px 14px; box-shadow:0 6px 18px rgba(62,53,82,.045); }
+.price-reference-card.active { border-color:#d9ccff; background:linear-gradient(145deg,#f4f0ff,#fff); }
+.reference-value { color:#171821; font-size:17px; font-weight:850; margin:5px 0 3px; }
+.reference-status { display:inline-block; border-radius:999px; padding:4px 7px; font-size:8px; font-weight:800; color:#6942d2; background:#f0ebff; }
+.scenario-answer { background:linear-gradient(145deg,#171620,#28223a); border-radius:19px; padding:15px; margin:9px 0 12px; color:#fff; }
+.scenario-answer .eyebrow { color:#aaa3bb; }
+.scenario-range { font-size:25px; font-weight:850; letter-spacing:-.8px; margin:4px 0; }
+.scenario-copy { color:#c1bbc9; font-size:9px; line-height:1.55; }
+.signal-step { display:flex; align-items:flex-start; gap:9px; padding:9px 0; border-top:1px solid #ece9f0; }
+.signal-step:first-child { border-top:0; }
+.signal-step-mark { width:20px; height:20px; flex:0 0 20px; border-radius:50%; display:flex; align-items:center; justify-content:center; color:#7045df; background:#eee8ff; font-size:9px; font-weight:850; }
+.model-gate { background:linear-gradient(145deg,#171620,#28223a); border-radius:20px; padding:16px; color:#fff; margin:9px 0 12px; box-shadow:0 12px 28px rgba(35,29,53,.15); }
+.model-gate .eyebrow { color:#aaa3bb; }
+.model-gate-status { color:#c8f51d; font-size:22px; font-weight:850; letter-spacing:-.6px; margin:5px 0; }
+.model-gate-status.blocked { color:#ff8995; }
+.model-gate-copy { color:#c1bbc9; font-size:10px; line-height:1.55; }
+.model-health { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:9px 0; }
+.source-state { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 0; border-top:1px solid #ece9f0; }
+.source-state:first-child { border-top:0; }
+.source-state-name { color:#24212d; font-size:10px; font-weight:750; }
+.source-state-copy { color:#85808f; font-size:9px; margin-top:2px; }
+.source-state-pill { flex:0 0 auto; border-radius:999px; padding:4px 7px; font-size:8px; font-weight:850; }
+.source-state-pill.ready { color:#607d12; background:#f0f7d9; }
+.source-state-pill.missing { color:#bf4554; background:#fff0f1; }
+.driver-row { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-top:1px solid #ece9f0; font-size:10px; }
+.driver-row:first-child { border-top:0; }
+.driver-supportive { color:#607d12; font-weight:750; }
+.driver-caution { color:#c24453; font-weight:750; }
+.stTabs [data-baseweb="tab-list"] { background:transparent; padding:0; border-radius:0; gap:22px; border-bottom:1px solid #e5e1ea; box-shadow:none; overflow-x:auto; flex-wrap:nowrap; scrollbar-width:none; }
+.stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display:none; }
+.stTabs [data-baseweb="tab"] { background:transparent; border:0; color:#777181; border-radius:0; padding:10px 2px 12px; flex:0 0 auto; font-weight:650; }
+.stTabs [aria-selected="true"] { background:transparent !important; color:#7045df !important; border:0 !important; box-shadow:inset 0 -3px 0 #7651e8 !important; }
+.stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] { display:none !important; }
+div[data-testid="stButton"] button { border-radius:999px; min-height:45px; font-weight:750; border:0; }
+div[data-testid="stButton"] button[kind="primary"] { background:#c8f51d; color:#11121a; }
+div[data-testid="stButton"] button[kind="secondary"] { background:#6c00f5; color:white; }
+div[data-testid="stExpander"] { background:rgba(255,255,255,.86); border:1px solid #e5e1ec; border-radius:16px; overflow:hidden; box-shadow:0 6px 20px rgba(62,53,82,.04); }
+div[data-testid="stMetric"] { background:#ececef; border-radius:13px; padding:10px; }
+label, .stMarkdown, [data-testid="stCaptionContainer"] { color:#34343d; }
+
+@media (max-width: 560px) {
+    .stApp { background:#f8f8f5; }
+    .block-container { margin:0; border:0; border-radius:0; box-shadow:none; max-width:100% !important; min-height:100vh; padding-bottom:calc(34px + env(safe-area-inset-bottom)) !important; }
+    .plan-strip { grid-template-columns:1fr; gap:9px; }
+    .view-banner { position:sticky; top:8px; z-index:20; backdrop-filter:blur(14px); }
+    .mobile-note, .mini-copy, .ticker-company { font-size:11px; }
+    .detail-row { font-size:12px; }
+    .stat-label, .eyebrow { font-size:10px; }
+    .stTabs [data-baseweb="tab"] { min-height:44px; padding-top:12px; }
+    .js-plotly-plot .modebar { opacity:1 !important; }
+    .js-plotly-plot .modebar-btn { width:31px !important; height:31px !important; }
+    .js-plotly-plot .modebar-btn svg { width:18px !important; height:18px !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Helpers ───────────────────────────────────────────────────
+def fetch_nasdaq(ticker: str, period: str) -> pd.DataFrame:
+    """Keyless Nasdaq fallback for daily US-listed stock and ETF history."""
+    if not ticker.replace('-', '').isalnum() or '.' in ticker:
+        raise ValueError('Nasdaq fallback currently supports plain US-listed symbols')
+    years = {'1y': 1, '2y': 2, '5y': 5, '10y': 10}.get(period, 5)
+    end = pd.Timestamp.now().normalize()
+    start = end - pd.DateOffset(years=years, days=10)
+    rows = []
+    matched_asset_class = None
+    for asset_class in ('stocks', 'etf'):
+        params = urlencode({
+            'assetclass': asset_class,
+            'fromdate': start.strftime('%Y-%m-%d'),
+            'todate': end.strftime('%Y-%m-%d'),
+            'limit': 5000,
+        })
+        request = Request(
+            f'https://api.nasdaq.com/api/quote/{ticker}/historical?{params}',
+            headers={
+                'User-Agent': ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                               'AppleWebKit/537.36 Chrome/125.0 Safari/537.36'),
+                'Accept': 'application/json,text/plain,*/*',
+                'Referer': 'https://www.nasdaq.com/',
+            },
+        )
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+        rows = (((payload.get('data') or {}).get('tradesTable') or {}).get('rows') or [])
+        if rows:
+            matched_asset_class = asset_class
+            break
+    if not rows:
+        raise ValueError(f'No Nasdaq price data returned for {ticker}')
+    raw = pd.DataFrame(rows).rename(columns={
+        'date': 'Date', 'open': 'Open', 'high': 'High', 'low': 'Low',
+        'close': 'Close', 'volume': 'Volume',
+    })
+    raw['Date'] = pd.to_datetime(raw['Date'], errors='coerce')
+    for column in ['Open', 'High', 'Low', 'Close', 'Volume']:
+        raw[column] = pd.to_numeric(
+            raw[column].astype(str).str.replace(r'[$,]', '', regex=True),
+            errors='coerce',
+        )
+    raw = raw.dropna(subset=['Date', 'Open', 'High', 'Low', 'Close'])
+    raw = raw.set_index('Date').sort_index()
+    raw['Volume'] = raw['Volume'].fillna(0)
+    raw['Adj Close'] = raw['Close']
+    label = 'ETF' if matched_asset_class == 'etf' else 'stock'
+    raw.attrs['provider'] = f'Nasdaq fallback ({label})'
+    return raw
+
+
+def fetch_stooq(ticker: str, period: str) -> pd.DataFrame:
+    """Fallback daily OHLCV source for US tickers when Yahoo is rate-limited."""
+    if '.' in ticker:
+        raise ValueError('Stooq fallback currently supports US symbols only')
+    years = {'1y': 1, '2y': 2, '5y': 5, '10y': 10}.get(period, 5)
+    end = pd.Timestamp.now().normalize()
+    start = end - pd.DateOffset(years=years, days=10)
+    params = urlencode({
+        's': f'{ticker.lower()}.us', 'd1': start.strftime('%Y%m%d'),
+        'd2': end.strftime('%Y%m%d'), 'i': 'd'
+    })
+    request = Request(
+        f'https://stooq.com/q/d/l/?{params}',
+        headers={'User-Agent': 'Mozilla/5.0 investor-research-tracker'}
+    )
+    with urlopen(request, timeout=20) as response:
+        payload = response.read()
+    raw = pd.read_csv(io.BytesIO(payload))
+    if raw.empty or 'Date' not in raw.columns:
+        raise ValueError(f'No Stooq price data returned for {ticker}')
+    raw['Date'] = pd.to_datetime(raw['Date'], errors='coerce')
+    raw = raw.dropna(subset=['Date']).set_index('Date').sort_index()
+    raw['Adj Close'] = raw['Close']
+    raw.attrs['provider'] = 'Stooq fallback'
+    return raw
+
+
+@st.cache_data(ttl=300)
+def fetch_data(ticker: str, period: str = "2y") -> pd.DataFrame:
+    yahoo_error = None
+    try:
+        raw = yf.download(
+            ticker, period=period, interval='1d', progress=False,
+            auto_adjust=False, repair=True, keepna=False, threads=False,
+            timeout=15
+        )
+        if raw.empty:
+            raise ValueError(f"No Yahoo price data returned for {ticker}")
+        raw.attrs['provider'] = 'Yahoo Finance'
+    except Exception as exc:
+        yahoo_error = exc
+        try:
+            raw = fetch_nasdaq(ticker, period)
+        except Exception as nasdaq_error:
+            try:
+                raw = fetch_stooq(ticker, period)
+            except Exception as stooq_error:
+                raise RuntimeError(
+                    f'All market-data providers failed. Yahoo: {yahoo_error}; '
+                    f'Nasdaq: {nasdaq_error}; Stooq: {stooq_error}'
+                ) from stooq_error
+
+    provider = raw.attrs.get('provider', 'Unknown')
+    df  = raw.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    close = df['Close'].astype(float)
+    high = df['High'].astype(float)
+    low = df['Low'].astype(float)
+    df['MA20'] = close.rolling(20).mean()
+    df['MA50'] = close.rolling(50).mean()
+    df['MA200'] = close.rolling(200).mean()
+
+    # Wilder RSI(14)
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    # MACD(12, 26, 9)
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema12 - ema26
+    df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+
+    # Bollinger Bands(20, 2) and Wilder ATR(14)
+    rolling_std = close.rolling(20).std()
+    df['BB_upper'] = df['MA20'] + rolling_std * 2
+    df['BB_lower'] = df['MA20'] - rolling_std * 2
+    prev_close = close.shift(1)
+    true_range = pd.concat([
+        high - low, (high - prev_close).abs(), (low - prev_close).abs()
+    ], axis=1).max(axis=1)
+    df['ATR'] = true_range.ewm(alpha=1 / 14, adjust=False).mean()
+    df['Volume_MA20'] = df['Volume'].rolling(20).mean()
+    # Use dividend-adjusted prices for historical return statistics when present.
+    df['ReturnClose'] = (df['Adj Close'].astype(float)
+                         if 'Adj Close' in df.columns else close)
+    df.attrs['provider'] = provider
+    return df
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_intraday_extended(ticker: str) -> pd.DataFrame:
+    """Recent five-minute bars including pre-market and after-hours sessions."""
+    raw = yf.download(
+        ticker, period='5d', interval='5m', prepost=True, progress=False,
+        auto_adjust=False, repair=True, keepna=False, threads=False, timeout=15,
+    )
+    if raw.empty:
+        return pd.DataFrame()
+    frame = raw.copy()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    frame = frame.loc[:, [column for column in ['Open', 'High', 'Low', 'Close', 'Volume']
+                          if column in frame.columns]].dropna(subset=['Close'])
+    index = pd.DatetimeIndex(frame.index)
+    if index.tz is None:
+        index = index.tz_localize('UTC')
+    frame.index = index.tz_convert(ZoneInfo('America/New_York'))
+    return frame.sort_index()
+
+
+def trading_session_label(timestamp: pd.Timestamp) -> str:
+    minutes = timestamp.hour * 60 + timestamp.minute
+    if 4 * 60 <= minutes < 9 * 60 + 30:
+        return 'PRE-MARKET'
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return 'REGULAR'
+    if 16 * 60 <= minutes < 20 * 60:
+        return 'AFTER HOURS'
+    return 'OVERNIGHT'
+
+
+def finite(value, fallback=0.0) -> float:
+    """Return a safe float for UI math when an indicator is missing."""
+    try:
+        value = float(value)
+        return value if np.isfinite(value) else float(fallback)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
+def normal_cdf(value: float) -> float:
+    return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
+
+
+def normal_pdf(value: float) -> float:
+    return math.exp(-0.5 * value * value) / math.sqrt(2.0 * math.pi)
+
+
+def option_model(spot: float, strike: float, years: float, rate: float,
+                 dividend: float, volatility: float, option_type: str) -> dict:
+    """Black-Scholes value and first-order Greeks for an educational scenario."""
+    if years <= 0 or volatility <= 0 or spot <= 0 or strike <= 0:
+        intrinsic = max(spot - strike, 0) if option_type == 'call' else max(strike - spot, 0)
+        return {'price': intrinsic, 'delta': 1.0 if spot > strike and option_type == 'call' else
+                -1.0 if spot < strike and option_type == 'put' else 0.0,
+                'gamma': 0.0, 'theta': 0.0, 'vega': 0.0}
+    root_t = math.sqrt(years)
+    d1 = ((math.log(spot / strike) +
+           (rate - dividend + 0.5 * volatility ** 2) * years) /
+          (volatility * root_t))
+    d2 = d1 - volatility * root_t
+    discount_r = math.exp(-rate * years)
+    discount_q = math.exp(-dividend * years)
+    if option_type == 'call':
+        price = spot * discount_q * normal_cdf(d1) - strike * discount_r * normal_cdf(d2)
+        delta = discount_q * normal_cdf(d1)
+        theta_year = (-spot * discount_q * normal_pdf(d1) * volatility / (2 * root_t)
+                      - rate * strike * discount_r * normal_cdf(d2)
+                      + dividend * spot * discount_q * normal_cdf(d1))
+    else:
+        price = strike * discount_r * normal_cdf(-d2) - spot * discount_q * normal_cdf(-d1)
+        delta = discount_q * (normal_cdf(d1) - 1)
+        theta_year = (-spot * discount_q * normal_pdf(d1) * volatility / (2 * root_t)
+                      + rate * strike * discount_r * normal_cdf(-d2)
+                      - dividend * spot * discount_q * normal_cdf(-d1))
+    gamma = discount_q * normal_pdf(d1) / (spot * volatility * root_t)
+    vega = spot * discount_q * normal_pdf(d1) * root_t / 100
+    return {'price': max(0.0, price), 'delta': delta, 'gamma': gamma,
+            'theta': theta_year / 365, 'vega': vega}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_option_expirations(ticker: str) -> list[str]:
+    return list(yf.Ticker(ticker).options)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_option_chain(ticker: str, expiration: str, option_type: str) -> pd.DataFrame:
+    chain = yf.Ticker(ticker).option_chain(expiration)
+    frame = chain.calls if option_type == 'call' else chain.puts
+    return frame.copy()
+
+
+def enrich_option_chain(frame: pd.DataFrame, spot: float, days: int,
+                        rate: float, dividend: float, option_type: str,
+                        fallback_volatility: float) -> pd.DataFrame:
+    work = frame.copy()
+    for column in ['strike', 'lastPrice', 'bid', 'ask', 'volume',
+                   'openInterest', 'impliedVolatility']:
+        work[column] = pd.to_numeric(work.get(column), errors='coerce')
+    work['volume'] = work['volume'].fillna(0)
+    work['openInterest'] = work['openInterest'].fillna(0)
+    valid_quote = (work['bid'] > 0) & (work['ask'] >= work['bid'])
+    work['mid'] = np.where(
+        valid_quote,
+        (work['bid'] + work['ask']) / 2,
+        work['lastPrice'],
+    )
+    work['spreadPct'] = np.where(
+        valid_quote & (work['mid'] > 0),
+        (work['ask'] - work['bid']) / work['mid'] * 100, np.nan
+    )
+    work['ivEstimated'] = work['impliedVolatility'].isna() | (work['impliedVolatility'] <= .01)
+    work['modelIV'] = work['impliedVolatility'].where(
+        ~work['ivEstimated'], max(fallback_volatility, .10)
+    )
+    models = [
+        option_model(spot, finite(row.strike), max(days, 1) / 365, rate,
+                     dividend, max(finite(row.modelIV), .01), option_type)
+        for row in work.itertuples()
+    ]
+    for key in ['delta', 'gamma', 'theta', 'vega']:
+        work[key] = [model[key] for model in models]
+    return work.replace([np.inf, -np.inf], np.nan)
+
+
+def contract_quality(row: pd.Series, desired_days: int) -> tuple[int, str, list[str]]:
+    spread = finite(row.get('spreadPct'), 999)
+    oi = finite(row.get('openInterest'))
+    volume = finite(row.get('volume'))
+    delta = abs(finite(row.get('delta')))
+    days = int(finite(row.get('dte')))
+    score = (30 if spread <= 5 else 23 if spread <= 10 else 12 if spread <= 20 else 0)
+    score += 25 if oi >= 1000 else 20 if oi >= 500 else 14 if oi >= 100 else 7 if oi >= 10 else 1
+    score += 15 if volume >= 500 else 12 if volume >= 100 else 7 if volume >= 10 else 2
+    score += 15 if days >= desired_days else 8 if days >= desired_days * .7 else 3
+    score += 15 if .45 <= delta <= .75 else 10 if .30 <= delta <= .85 else 4
+    if bool(row.get('ivEstimated', False)):
+        score -= 10
+    score = max(0, min(100, int(score)))
+    label = 'Excellent' if score >= 80 else 'Good' if score >= 65 else 'Mixed' if score >= 45 else 'Poor'
+    notes = []
+    notes.append('Tight quote spread' if spread <= 10 else
+                 'No live two-sided quote' if not np.isfinite(finite(row.get('spreadPct'), np.nan)) else
+                 'Wide quote spread')
+    notes.append('Healthy open interest' if oi >= 500 else 'Limited open interest')
+    notes.append('Expiration covers the selected view' if days >= desired_days else 'Expiration may be too short')
+    if bool(row.get('ivEstimated', False)):
+        notes.append('IV unavailable; scenario uses historical volatility')
+    return score, label, notes
+
+
+def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
+    source_attrs = df.attrs.copy()
+    df = df.copy()
+    df['Signal'] = 'HOLD'
+    df['Score']  = 0
+    for i in range(1, len(df)):
+        sc = 0
+        close, ma20, ma50 = df['Close'].iloc[i], df['MA20'].iloc[i], df['MA50'].iloc[i]
+        rsi,  macd, macd_s = df['RSI'].iloc[i], df['MACD'].iloc[i], df['MACD_signal'].iloc[i]
+        vol, vol_ma = df['Volume'].iloc[i], df['Volume_MA20'].iloc[i]
+        bbl = df['BB_lower'].iloc[i]
+
+        if close > ma20:           sc += 15
+        if ma20  > ma50:           sc += 15
+        if close > df['MA200'].iloc[i]: sc += 10
+        if 40 < rsi < 65:          sc += 20
+        if macd > macd_s:          sc += 15
+        if close <= bbl * 1.02:    sc += 10
+        if vol   > vol_ma * 1.3:   sc += 15
+        if rsi   > 75:             sc -= 25
+        if close < ma20:           sc -= 20
+        if macd  < 0:              sc -= 10
+
+        df.iloc[i, df.columns.get_loc('Score')]  = sc
+        df.iloc[i, df.columns.get_loc('Signal')] = (
+            'BUY' if sc >= 60 else 'SELL' if sc <= 20 else 'HOLD'
+        )
+    df.attrs.update(source_attrs)
+    return df
+
+
+def build_trade_plan(df: pd.DataFrame, account_size: float, risk_pct: float,
+                     horizon: str) -> dict:
+    """Create a compact support/risk/resistance map; outputs are not orders."""
+    last = df.iloc[-1]
+    cur = finite(last['Close'])
+    atr = max(finite(last['ATR'], cur * 0.02), cur * 0.005)
+    recent = df.tail(60)
+    support_20 = finite(recent['Low'].tail(20).min(), cur - atr)
+    support_60 = finite(recent['Low'].tail(60).min(), support_20)
+    resistance_20 = finite(recent['High'].tail(20).max(), cur + atr)
+    resistance_60 = finite(recent['High'].tail(60).max(), resistance_20)
+    ma20 = finite(last['MA20'], cur)
+
+    stop_buffer = {'Tactical (1–10 days)': .25,
+                   'Swing (2–8 weeks)': .50,
+                   'Position (2–12 months)': 1.00}[horizon]
+    support_anchor = max(support_20, ma20)
+    entry_high = min(cur, support_anchor + atr * .35)
+    entry_low = min(entry_high, max(0.01, support_anchor - atr * .35))
+    stop = max(0.01, support_20 - atr * stop_buffer)
+    risk_per_share = max(cur - stop, atr * .5)
+    target_1 = max(resistance_20, cur + atr * .50)
+    target_2 = max(resistance_60, target_1 + atr * .75)
+    risk_budget = max(0.0, account_size * risk_pct / 100)
+    shares = int(risk_budget // risk_per_share) if risk_per_share > 0 else 0
+    max_affordable = int(account_size // entry_high) if entry_high > 0 else 0
+    shares = min(shares, max_affordable)
+    return {
+        'entry_low': entry_low, 'entry_high': entry_high, 'stop': stop,
+        'target_1': target_1, 'target_2': target_2,
+        'risk_per_share': risk_per_share, 'risk_budget': risk_budget,
+        'shares': shares, 'position_value': shares * entry_high,
+        'rr1': (target_1 - entry_high) / risk_per_share,
+        'rr2': (target_2 - entry_high) / risk_per_share,
+        'support': support_20, 'support_60': support_60,
+        'resistance': resistance_20, 'resistance_60': resistance_60,
+    }
+
+
+@st.cache_data(ttl=600)
+def get_sentiment(ticker: str) -> tuple:
+    try:
+        news = yf.Ticker(ticker).news
+        scores, items = [], []
+        for a in news[:15]:
+            c = a.get('content', {})
+            t = c.get('title', '') if isinstance(c, dict) else ''
+            if t:
+                p = TextBlob(t).sentiment.polarity
+                scores.append(p)
+                provider = c.get('provider', {}) if isinstance(c, dict) else {}
+                provider_name = (provider.get('displayName', '')
+                                 if isinstance(provider, dict) else str(provider or ''))
+                items.append({
+                    'title': t,
+                    'polarity': p,
+                    'provider': provider_name,
+                    'published': c.get('pubDate', '') if isinstance(c, dict) else '',
+                })
+        avg = sum(scores) / len(scores) if scores else 0
+        return avg, items
+    except:
+        return 0, []
+
+
+def build_news_signal(items: list[dict], market_reaction: float,
+                      reaction_threshold: float) -> dict:
+    """Heuristic news/noise classifier; deliberately not a trained forecast."""
+    event_groups = {
+        'Earnings / guidance': ['earnings', 'revenue', 'eps', 'guidance', 'forecast', 'outlook'],
+        'M&A': ['acquire', 'acquisition', 'merger', 'takeover', 'buyout'],
+        'Legal / regulatory': ['lawsuit', 'probe', 'investigation', 'antitrust', 'regulator', 'fda', 'sec '],
+        'Leadership / capital': ['ceo', 'resign', 'buyback', 'dividend', 'offering', 'layoff'],
+        'Analyst action': ['upgrade', 'downgrade', 'price target', 'initiates', 'rating'],
+    }
+    positive_terms = ['beat', 'beats', 'raise', 'raises', 'raised', 'approval', 'approved',
+                      'upgrade', 'buyback', 'record', 'growth', 'profit']
+    negative_terms = ['miss', 'misses', 'cut', 'cuts', 'lower', 'downgrade', 'lawsuit',
+                      'probe', 'investigation', 'decline', 'loss', 'layoff', 'resign']
+    seen_tokens = []
+    enriched = []
+    for raw in items:
+        title = str(raw.get('title') or '')
+        lower = title.lower()
+        tokens = set(re.findall(r'[a-z0-9]+', lower)) - {
+            'the', 'a', 'an', 'to', 'of', 'for', 'and', 'in', 'on', 'with', 'is', 'as'
+        }
+        similarity = max(
+            ((len(tokens & previous) / max(1, len(tokens | previous))) for previous in seen_tokens),
+            default=0.0,
+        )
+        duplicate = similarity >= .62
+        seen_tokens.append(tokens)
+        event_type = 'General coverage'
+        for label, keywords in event_groups.items():
+            if any(keyword in lower for keyword in keywords):
+                event_type = label
+                break
+        material = event_type in {'Earnings / guidance', 'M&A', 'Legal / regulatory',
+                                  'Leadership / capital'}
+        lexical = sum(term in lower for term in positive_terms) - sum(
+            term in lower for term in negative_terms
+        )
+        polarity = finite(raw.get('polarity'))
+        direction_score = polarity + (.18 if lexical > 0 else -.18 if lexical < 0 else 0)
+        enriched.append({**raw, 'duplicate': duplicate, 'event_type': event_type,
+                         'material': material, 'direction_score': direction_score})
+
+    if not enriched:
+        return {'label': 'Insufficient evidence', 'css': 'readiness-wait', 'strength': 'Limited',
+                'impact': 'No adjustment', 'copy': 'No analyzable headlines were returned.',
+                'items': [], 'noise_score': 100, 'unique': 0, 'material': 0,
+                'reaction': market_reaction, 'confirmed': False}
+    unique_items = [item for item in enriched if not item['duplicate']]
+    material_count = sum(item['material'] for item in unique_items)
+    analyst_count = sum(item['event_type'] == 'Analyst action' for item in unique_items)
+    weights = [1.5 if item['material'] else 1.0 if item['event_type'] == 'Analyst action' else .6
+               for item in unique_items]
+    weighted_direction = (sum(item['direction_score'] * weight
+                              for item, weight in zip(unique_items, weights)) /
+                          max(sum(weights), .01))
+    direction = 1 if weighted_direction > .09 else -1 if weighted_direction < -.09 else 0
+    reaction_direction = (1 if market_reaction >= reaction_threshold else
+                          -1 if market_reaction <= -reaction_threshold else 0)
+    confirmed = direction != 0 and reaction_direction == direction
+    contradicted = direction != 0 and reaction_direction == -direction
+    duplicate_ratio = sum(item['duplicate'] for item in enriched) / len(enriched)
+    general_ratio = sum(item['event_type'] == 'General coverage' for item in unique_items) / max(1, len(unique_items))
+    noise_score = int(np.clip(35 + duplicate_ratio * 40 + general_ratio * 25 -
+                              material_count * 18 - analyst_count * 5 -
+                              (15 if confirmed else 0), 0, 100))
+    if material_count == 0 and noise_score >= 65:
+        label, css, impact = 'Likely noise', 'readiness-wait', 'Keep the existing price plan'
+        copy = 'Most headlines appear repetitive, general or unconfirmed by price.'
+    elif contradicted:
+        label, css, impact = 'Mixed / contradicted', 'readiness-risk', 'Reduce trend confidence'
+        copy = 'Headline direction and the observed market reaction disagree.'
+    elif confirmed and direction > 0:
+        label, css, impact = 'Confirmed positive', 'readiness-good', 'Supports the bullish case'
+        copy = 'Relevant headlines and the observed price reaction point in the same positive direction.'
+    elif confirmed and direction < 0:
+        label, css, impact = 'Confirmed negative', 'readiness-risk', 'Review downside risk'
+        copy = 'Relevant headlines and the observed price reaction point in the same negative direction.'
+    elif direction > 0:
+        label, css, impact = 'Positive · unconfirmed', 'readiness-wait', 'Wait for price confirmation'
+        copy = 'Headline direction is positive, but the observed price move has not confirmed it.'
+    elif direction < 0:
+        label, css, impact = 'Negative · unconfirmed', 'readiness-wait', 'Watch for downside confirmation'
+        copy = 'Headline direction is negative, but the observed price move has not confirmed it.'
+    else:
+        label, css, impact = 'Mixed / neutral', 'readiness-wait', 'No change to the price plan'
+        copy = 'The available headlines do not point in a consistent direction.'
+    strength = 'Moderate' if material_count > 0 or confirmed else 'Limited'
+    return {'label': label, 'css': css, 'strength': strength, 'impact': impact,
+            'copy': copy, 'items': enriched, 'noise_score': noise_score,
+            'unique': len(unique_items), 'material': material_count,
+            'reaction': market_reaction, 'confirmed': confirmed}
+
+
+def score_summary(sig, chg, sent, atr_pct) -> tuple:
+    sc = 50
+    if sig == 'BUY':   sc += 20
+    elif sig == 'SELL': sc -= 20
+    if chg > 3:  sc += 15
+    elif chg < -3: sc -= 15
+    if sent > 0.1:  sc += 10
+    elif sent < -0.1: sc -= 10
+    if atr_pct > 5: sc -= 5
+    sc = max(0, min(100, sc))
+    if   sc >= 75: verdict, css = 'Conviction setup', 'buy'
+    elif sc >= 60: verdict, css = 'Constructive', 'buy'
+    elif sc <= 30: verdict, css = 'Defensive', 'sell'
+    elif sc <= 45: verdict, css = 'Fragile', 'sell'
+    else:          verdict, css = 'Neutral', 'wait'
+    return sc, verdict, css
+
+
+# ── Plotly chart ──────────────────────────────────────────────
+def build_mobile_chart(df: pd.DataFrame, window: str) -> go.Figure:
+    """A single, correctly scaled price chart designed for a phone viewport."""
+    sessions = {'1M': 22, '3M': 66, '6M': 132, '1Y': 252}[window]
+    view = df.tail(sessions).copy()
+    up = '#c8f51d'
+    down = '#6c00f5'
+
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=view.index,
+        open=view['Open'], high=view['High'], low=view['Low'], close=view['Close'],
+        name='Price',
+        increasing_line_color=up, increasing_fillcolor=up,
+        decreasing_line_color=down, decreasing_fillcolor=down,
+        whiskerwidth=.35,
+        hovertemplate=(
+            '%{x|%b %d, %Y}<br>Open $%{open:.2f}<br>High $%{high:.2f}'
+            '<br>Low $%{low:.2f}<br>Close $%{close:.2f}<extra></extra>'
+        )
+    ))
+    fig.add_trace(go.Scatter(
+        x=view.index, y=view['MA20'], name='20D avg',
+        line=dict(color='#9b76ff', width=1.35),
+        hovertemplate='20D avg $%{y:.2f}<extra></extra>'
+    ))
+
+    last = finite(view['Close'].iloc[-1])
+    fig.add_hline(
+        y=last, line_width=1, line_dash='dot', line_color='rgba(200,245,29,.45)',
+        annotation_text=f' ${last:.2f} ', annotation_position='right',
+        annotation_font_color='#11121a', annotation_bgcolor=up,
+        annotation_font_size=10
+    )
+    fig.update_layout(
+        height=315,
+        paper_bgcolor='#161621', plot_bgcolor='#161621',
+        font=dict(family='Inter', color='#9a9aa5', size=10),
+        margin=dict(l=8, r=8, t=38, b=8),
+        title=dict(text=f'Price · {window}', x=.04, y=.96,
+                   font=dict(color='#f8f8fb', size=12)),
+        xaxis_rangeslider_visible=False,
+        hovermode='x unified',
+        dragmode='pan',
+        hoverlabel=dict(bgcolor='#f7f7f3', bordercolor='#e4e4e8',
+                        font=dict(color='#161621', size=11)),
+        legend=dict(orientation='h', x=.98, xanchor='right', y=1.08,
+                    font=dict(size=9, color='#a7a7b2'), bgcolor='rgba(0,0,0,0)'),
+        showlegend=True,
+    )
+    fig.update_xaxes(
+        showgrid=False, zeroline=False, fixedrange=False,
+        tickformat='%b %d' if sessions <= 66 else '%b', nticks=5,
+        tickfont=dict(color='#767682', size=9),
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        spikecolor='rgba(255,255,255,.35)', spikedash='dot', spikethickness=1,
+        rangebreaks=[dict(bounds=['sat', 'mon'])]
+    )
+    fig.update_yaxes(
+        side='right', showgrid=True, gridcolor='rgba(255,255,255,.07)',
+        zeroline=False, fixedrange=False, tickprefix='$', nticks=6,
+        showspikes=True, spikemode='across', spikesnap='cursor',
+        spikecolor='rgba(255,255,255,.35)', spikedash='dot', spikethickness=1,
+        tickfont=dict(color='#767682', size=9)
+    )
+    return fig
+
+
+def build_extended_hours_chart(frame: pd.DataFrame, official_close: float) -> go.Figure:
+    """Compact intraday view that visually separates regular and extended sessions."""
+    latest_date = frame.index[-1].date()
+    view = frame.loc[frame.index.date == latest_date].copy()
+    view['Session'] = [trading_session_label(pd.Timestamp(value)) for value in view.index]
+    colors = {
+        'PRE-MARKET': '#9b76ff', 'REGULAR': '#c8f51d',
+        'AFTER HOURS': '#ff9e64', 'OVERNIGHT': '#64c7ff',
+    }
+    fig = go.Figure()
+    for session in ['PRE-MARKET', 'REGULAR', 'AFTER HOURS', 'OVERNIGHT']:
+        segment = view.loc[view['Session'].eq(session)]
+        if segment.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=segment.index, y=segment['Close'], mode='lines', name=session.title(),
+            line=dict(color=colors[session], width=2),
+            hovertemplate=f'{session.title()}<br>%{{x|%I:%M %p ET}}<br>$%{{y:.2f}}<extra></extra>',
+        ))
+    fig.add_hline(
+        y=official_close, line_dash='dot', line_width=1,
+        line_color='rgba(255,255,255,.35)', annotation_text=' official close ',
+        annotation_font_color='#d4d0dd', annotation_font_size=9,
+    )
+    fig.update_layout(
+        height=225, paper_bgcolor='#161621', plot_bgcolor='#161621',
+        font=dict(family='Inter', color='#9a9aa5', size=9),
+        margin=dict(l=8, r=8, t=34, b=8), hovermode='x unified', dragmode='pan',
+        title=dict(text='Today · regular + extended hours', x=.04, y=.95,
+                   font=dict(color='#f8f8fb', size=11)),
+        legend=dict(orientation='h', x=.98, xanchor='right', y=1.12,
+                    font=dict(size=8), bgcolor='rgba(0,0,0,0)'),
+    )
+    fig.update_xaxes(showgrid=False, tickformat='%I %p', nticks=5, fixedrange=False)
+    fig.update_yaxes(side='right', tickprefix='$', nticks=5, fixedrange=False,
+                     gridcolor='rgba(255,255,255,.07)')
+    return fig
+
+
+def classify_regime(frame: pd.DataFrame) -> pd.Series:
+    """Classify price structure using only information available on each date."""
+    close, ma20, ma50, ma200 = (frame['Close'], frame['MA20'],
+                                frame['MA50'], frame['MA200'])
+    conditions = [
+        (close > ma20) & (ma20 > ma50) & (ma50 > ma200),
+        (close < ma20) & (ma20 < ma50) & (ma50 < ma200),
+        (close > ma20) & (ma20 > ma50) & (close < ma200),
+        (close < ma20) & (ma50 > ma200),
+    ]
+    labels = ['Uptrend', 'Downtrend', 'Recovery', 'Pullback']
+    return pd.Series(np.select(conditions, labels, default='Range'), index=frame.index)
+
+
+def historical_evidence(frame: pd.DataFrame) -> tuple[str, list[dict]]:
+    """Summarize forward returns after historical observations in today's regime."""
+    work = frame.copy()
+    work['Regime'] = classify_regime(work)
+    current = str(work['Regime'].iloc[-1])
+    rows = []
+    return_close = work['ReturnClose'] if 'ReturnClose' in work else work['Close']
+    for sessions in (5, 20, 60):
+        work[f'Fwd{sessions}'] = return_close.shift(-sessions) / return_close - 1
+        candidates = work.loc[work['Regime'].eq(current), f'Fwd{sessions}'].dropna()
+        # Space observations by their horizon to reduce overlapping-return inflation.
+        sample = candidates.iloc[::sessions]
+        rows.append({
+            'horizon': f'{sessions} sessions',
+            'sample': int(len(sample)),
+            'reliability': ('Moderate' if len(sample) >= 30 else
+                            'Limited' if len(sample) >= 10 else 'Very limited'),
+            'median': float(sample.median() * 100) if len(sample) else np.nan,
+            'hit_rate': float((sample > 0).mean() * 100) if len(sample) else np.nan,
+            'worst': float(sample.quantile(.10) * 100) if len(sample) else np.nan,
+        })
+    return current, rows
+
+
+def risk_snapshot(frame: pd.DataFrame) -> dict:
+    close = (frame['ReturnClose'] if 'ReturnClose' in frame else frame['Close']).dropna()
+    returns = close.pct_change().dropna()
+    one_year = close.tail(252)
+    drawdown = one_year / one_year.cummax() - 1
+    return {
+        'vol20': finite(returns.tail(20).std() * np.sqrt(252) * 100),
+        'vol60': finite(returns.tail(60).std() * np.sqrt(252) * 100),
+        'max_drawdown': finite(drawdown.min() * 100),
+        'var95': finite(returns.tail(252).quantile(.05) * 100),
+        'from_high': finite((close.iloc[-1] / one_year.max() - 1) * 100),
+    }
+
+
+def data_quality(frame: pd.DataFrame) -> dict:
+    """Run basic integrity and freshness checks before displaying analytics."""
+    issues = []
+    required = ['Open', 'High', 'Low', 'Close', 'Volume']
+    latest = frame[required].tail(252)
+    if latest.isna().any().any():
+        issues.append('missing OHLCV values')
+    bad_ohlc = ((latest['High'] < latest[['Open', 'Close', 'Low']].max(axis=1)) |
+                (latest['Low'] > latest[['Open', 'Close', 'High']].min(axis=1)))
+    if bad_ohlc.any():
+        issues.append('invalid OHLC relationship')
+    if frame.index.duplicated().any():
+        issues.append('duplicate dates')
+    as_of = pd.Timestamp(frame.index[-1]).tz_localize(None).normalize()
+    today = pd.Timestamp.now().tz_localize(None).normalize()
+    age_days = int((today - as_of).days)
+    if age_days > 4:
+        issues.append(f'latest bar is {age_days} days old')
+    return {
+        'status': 'PASS' if not issues else 'CHECK',
+        'issues': issues,
+        'age_days': age_days,
+        'as_of': as_of.strftime('%b %d, %Y'),
+    }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def fetch_ml_outlook(ticker: str, sector_name: str, spot: float) -> dict:
+    """Load benchmark histories and run the frozen, audited research artifact."""
+    if not ML_ENGINE_AVAILABLE or not MODEL_ARTIFACT_PATH.exists():
+        raise RuntimeError('Professional ML model files are not installed.')
+    artifact = load_artifact(MODEL_ARTIFACT_PATH)
+    stock = fetch_data(ticker, period='5y')
+    spy = stock if ticker == 'SPY' else fetch_data('SPY', period='5y')
+    qqq = stock if ticker == 'QQQ' else fetch_data('QQQ', period='5y')
+    sector_symbol = sector_symbol_for(ticker, sector_name)
+    if sector_symbol == ticker:
+        sector = stock
+    elif sector_symbol == 'SPY':
+        sector = spy
+    elif sector_symbol == 'QQQ':
+        sector = qqq
+    else:
+        sector = fetch_data(sector_symbol, period='5y')
+    predictions = predict_latest(artifact, stock, spy, qqq, sector, spot)
+    return {
+        'artifact': artifact,
+        'predictions': predictions,
+        'sector_symbol': sector_symbol,
+        'benchmark_dates': {
+            'stock': pd.Timestamp(stock.index[-1]).strftime('%b %d, %Y'),
+            'spy': pd.Timestamp(spy.index[-1]).strftime('%b %d, %Y'),
+            'qqq': pd.Timestamp(qqq.index[-1]).strftime('%b %d, %Y'),
+            'sector': pd.Timestamp(sector.index[-1]).strftime('%b %d, %Y'),
+        },
+    }
+
+
+# ── Mobile-first application ──────────────────────────────────
+if 'ticker_input' not in st.session_state:
+    st.session_state.ticker_input = 'META'
+
+def choose_quick_ticker() -> None:
+    selected = st.session_state.get('quick_ticker')
+    if selected:
+        st.session_state.ticker_input = selected
+
+st.markdown('<div class="search-label">FIND A STOCK OR ETF</div>', unsafe_allow_html=True)
+st.text_input(
+    "Search ticker", key="ticker_input", placeholder="META, TQQQ, AAPL",
+    label_visibility="collapsed", help="Type a ticker and press Enter to analyze."
+)
+
+st.markdown('<div class="search-label" style="margin-top:-2px;">QUICK ACCESS</div>', unsafe_allow_html=True)
+quick_symbols = ['META', 'TQQQ', 'AAPL', 'NVDA']
+st.pills(
+    "Quick access", quick_symbols, key="quick_ticker",
+    label_visibility="collapsed", selection_mode="single",
+    on_change=choose_quick_ticker
+)
+
+ticker = st.session_state.ticker_input.upper().strip()
+
+with st.expander("Tracking settings", expanded=False):
+    settings_left, settings_right = st.columns(2)
+    with settings_left:
+        chart_window = st.selectbox("Chart range", ["1M", "3M", "6M", "1Y"], index=1)
+    with settings_right:
+        horizon = st.selectbox(
+            "Review horizon",
+            ["Tactical (1–10 days)", "Swing (2–8 weeks)", "Position (2–12 months)"],
+            index=1
+        )
+    if st.button("Refresh market data", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
+
+if not ticker:
+    st.info("Enter a ticker to continue.")
+    st.stop()
+
+with st.spinner(f"Loading {ticker} market data…"):
+    try:
+        df = compute_signals(fetch_data(ticker, period="5y"))
+        provider = df.attrs.get('provider', 'Unknown')
+        plan = build_trade_plan(df, 10_000, 1.0, horizon)
+        sent_avg, news_items = get_sentiment(ticker)
+    except Exception as exc:
+        st.error(f"Unable to load **{html.escape(ticker)}**. Check the symbol and connection.")
+        with st.expander("Technical details"):
+            st.code(str(exc))
+        st.stop()
+
+try:
+    info = yf.Ticker(ticker).info or {}
+except Exception:
+    info = {}
+
+try:
+    intraday = fetch_intraday_extended(ticker)
+except Exception:
+    intraday = pd.DataFrame()
+
+cur = finite(df['Close'].iloc[-1])
+prev = finite(df['Close'].iloc[-2], cur)
+chg_1d = (cur - prev) / prev * 100 if prev else 0
+chg_20d = (cur / finite(df['Close'].iloc[-21], cur) - 1) * 100
+sig = str(df['Signal'].iloc[-1])
+rsi = finite(df['RSI'].iloc[-1], 50)
+atr = finite(df['ATR'].iloc[-1], cur * .02)
+atr_p = atr / cur * 100 if cur else 0
+vol = finite(df['Volume'].iloc[-1])
+vol_ma = finite(df['Volume_MA20'].iloc[-1], vol)
+
+safe_ticker = html.escape(ticker)
+company = html.escape(str(info.get('shortName') or ticker))
+market_cap = finite(info.get('marketCap'))
+market_cap_text = f"${market_cap/1e12:.2f}T" if market_cap >= 1e12 else f"${market_cap/1e9:.1f}B" if market_cap else "—"
+avg_volume = finite(info.get('averageVolume'), vol_ma)
+avg_volume_text = f"{avg_volume/1e6:.1f}M" if avg_volume else "—"
+week_high = finite(info.get('fiftyTwoWeekHigh'), df['High'].tail(252).max())
+week_low = finite(info.get('fiftyTwoWeekLow'), df['Low'].tail(252).min())
+pe = finite(info.get('trailingPE'))
+beta = finite(info.get('beta'))
+analyst_target_low = finite(info.get('targetLowPrice'))
+analyst_target_mean = finite(info.get('targetMeanPrice'))
+analyst_target_high = finite(info.get('targetHighPrice'))
+analyst_opinions = int(finite(info.get('numberOfAnalystOpinions')))
+day_low = finite(df['Low'].iloc[-1])
+day_high = finite(df['High'].iloc[-1])
+data_as_of = pd.Timestamp(df.index[-1]).strftime('%b %d, %Y')
+change_class = 'positive' if chg_1d >= 0 else 'negative'
+regime, evidence_rows = historical_evidence(df)
+risk = risk_snapshot(df)
+ma20 = finite(df['MA20'].iloc[-1], cur)
+ma50 = finite(df['MA50'].iloc[-1], cur)
+ma200 = finite(df['MA200'].iloc[-1], cur)
+macd = finite(df['MACD'].iloc[-1])
+macd_signal = finite(df['MACD_signal'].iloc[-1])
+alignment_label = ('Positive' if cur > ma20 > ma50 > ma200 else
+                   'Negative' if cur < ma20 < ma50 < ma200 else 'Mixed')
+quality = data_quality(df)
+quality_note = ', '.join(quality['issues']) if quality['issues'] else 'No structural OHLCV errors detected'
+returns_by_horizon = {
+    '1 week': (cur / finite(df['Close'].iloc[-6], cur) - 1) * 100,
+    '1 month': chg_20d,
+    '3 months': (cur / finite(df['Close'].iloc[-61], cur) - 1) * 100,
+    '1 year': (cur / finite(df['Close'].iloc[-252], cur) - 1) * 100,
+}
+
+# Keep the official daily close as the technical-analysis anchor. A fresh
+# pre/post-market quote is used only as a clearly labeled preview.
+market_state = str(info.get('marketState') or '').upper()
+state_map = {
+    'PRE': 'PRE-MARKET', 'PREPRE': 'PRE-MARKET',
+    'POST': 'AFTER HOURS', 'POSTPOST': 'AFTER HOURS',
+    'REGULAR': 'REGULAR', 'CLOSED': 'CLOSED',
+}
+session_label = state_map.get(market_state, 'CLOSED')
+extended_active = session_label in ('PRE-MARKET', 'AFTER HOURS', 'OVERNIGHT')
+extended_price = 0.0
+extended_timestamp = None
+intraday_age_minutes = np.nan
+if session_label == 'PRE-MARKET':
+    extended_price = finite(info.get('preMarketPrice'))
+    raw_timestamp = info.get('preMarketTime')
+elif session_label == 'AFTER HOURS':
+    extended_price = finite(info.get('postMarketPrice'))
+    raw_timestamp = info.get('postMarketTime')
+else:
+    raw_timestamp = None
+try:
+    if raw_timestamp:
+        extended_timestamp = pd.to_datetime(float(raw_timestamp), unit='s', utc=True).tz_convert('America/New_York')
+except (TypeError, ValueError, OverflowError):
+    extended_timestamp = None
+
+if not intraday.empty:
+    latest_intraday_time = pd.Timestamp(intraday.index[-1])
+    latest_intraday_price = finite(intraday['Close'].iloc[-1])
+    latest_intraday_session = trading_session_label(latest_intraday_time)
+    now_et = pd.Timestamp.now(tz='America/New_York')
+    intraday_age_minutes = max(0.0, (now_et - latest_intraday_time).total_seconds() / 60)
+    if extended_active and latest_intraday_session == session_label and intraday_age_minutes <= 240:
+        extended_price = latest_intraday_price or extended_price
+        extended_timestamp = latest_intraday_time
+    elif not extended_active and latest_intraday_session in ('PRE-MARKET', 'AFTER HOURS', 'OVERNIGHT') and intraday_age_minutes <= 30:
+        session_label = latest_intraday_session
+        extended_active = True
+        extended_price = latest_intraday_price
+        extended_timestamp = latest_intraday_time
+
+if extended_price <= 0:
+    extended_active = False
+analysis_price = extended_price if extended_active else cur
+extended_change = (analysis_price / cur - 1) * 100 if cur else 0.0
+extended_time_text = (extended_timestamp.strftime('%b %d · %I:%M %p ET')
+                      if extended_timestamp is not None else 'Latest available quote')
+market_pill_label = session_label if extended_active else ('LIVE MARKET' if market_state == 'REGULAR' else 'DAILY DATA')
+extended_volume = 0.0
+extended_volume_ratio = np.nan
+extended_bar_count = 0
+if extended_active and not intraday.empty:
+    session_tags = pd.Series(
+        [trading_session_label(pd.Timestamp(value)) for value in intraday.index],
+        index=intraday.index,
+    )
+    latest_session_date = intraday.index[-1].date()
+    current_session_mask = ((intraday.index.date == latest_session_date) &
+                            session_tags.eq(session_label).to_numpy())
+    current_session_bars = intraday.loc[current_session_mask]
+    extended_bar_count = len(current_session_bars)
+    extended_volume = finite(current_session_bars.get('Volume', pd.Series(dtype=float)).sum())
+    previous = intraday.loc[session_tags.eq(session_label)]
+    if not previous.empty and 'Volume' in previous.columns:
+        previous_daily_volume = previous.assign(
+            SessionDate=previous.index.date
+        ).groupby('SessionDate')['Volume'].sum()
+        previous_daily_volume = previous_daily_volume.loc[
+            previous_daily_volume.index != latest_session_date
+        ]
+        previous_median = finite(previous_daily_volume.median()) if not previous_daily_volume.empty else 0.0
+        if previous_median > 0:
+            extended_volume_ratio = extended_volume / previous_median
+if np.isfinite(intraday_age_minutes) and intraday_age_minutes <= 15 and extended_bar_count >= 3:
+    extended_confidence = 'Moderate'
+else:
+    extended_confidence = 'Limited'
+if np.isfinite(extended_volume_ratio):
+    participation_text = (f'{extended_volume_ratio:.1f}× recent {session_label.lower()} median'
+                          if extended_volume_ratio > 0 else 'No reported session volume')
+else:
+    participation_text = 'Not enough comparable sessions'
+news_market_reaction = extended_change if extended_active else chg_1d
+news_reaction_basis = session_label.lower() if extended_active else 'latest regular session'
+news_signal = build_news_signal(
+    news_items,
+    news_market_reaction,
+    reaction_threshold=max(.75, atr_p * .35),
+)
+
+st.markdown(f"""
+<div class="mobile-nav">
+  <div class="ticker-identity">
+    <div class="ticker-monogram">{safe_ticker[:2]}</div>
+    <div class="ticker-lockup">
+      <div class="ticker-name">{safe_ticker}</div>
+      <div class="ticker-company">{company}</div>
+    </div>
+  </div>
+  <div class="market-pill"><span class="market-dot"></span>{market_pill_label}</div>
+</div>
+""", unsafe_allow_html=True)
+
+tab_overview, tab_signals, tab_model, tab_risk, tab_options, tab_research = st.tabs([
+    "Overview", "Signals", "Model", "Risk", "Options", "Research"
+])
+
+with tab_signals:
+    signal_trend, signal_momentum = st.tabs(["Trend", "Momentum"])
+
+with tab_research:
+    research_evidence, research_company, research_news = st.tabs([
+        "Evidence", "Company", "News"
+    ])
+
+with tab_model:
+    st.markdown("""
+    <div class="price-panel">
+      <div class="eyebrow">MODEL CHECK · RESEARCH ONLY</div>
+      <div class="hero-price" style="font-size:25px;">Can this model help right now?</div>
+      <div class="mini-copy">We test the model on historical periods it did not see before. If the result is no better than a simple guess, the app tells you not to use it for a trading decision.</div>
+    </div>
+    """, unsafe_allow_html=True)
+    model_session_key = f'ml_outlook_ready_{ticker}'
+    if st.button("Check model reliability", key=f'run_ml_{ticker}', type="primary", width="stretch"):
+        st.session_state[model_session_key] = True
+
+    if not st.session_state.get(model_session_key, False):
+        st.markdown("""
+        <div class="mobile-card">
+          <div class="eyebrow">WHAT HAPPENS AFTER YOU PRESS THE BUTTON</div>
+          <div class="signal-step"><div class="signal-step-mark">1</div><div><div class="plan-row-title">Read today's market information</div><div class="plan-row-copy">The app checks price, volume, the broad market and the stock's sector.</div></div></div>
+          <div class="signal-step"><div class="signal-step-mark">2</div><div><div class="plan-row-title">Check whether the model has worked before</div><div class="plan-row-copy">It tests the model on later historical periods that were not used for training.</div></div></div>
+          <div class="signal-step"><div class="signal-step-mark">3</div><div><div class="plan-row-title">Give you a clear answer</div><div class="plan-row-copy">If the model is not dependable, the app says so instead of suggesting a trade.</div></div></div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        try:
+            with st.spinner("Checking the model against unseen history…"):
+                ml_package = fetch_ml_outlook(ticker, str(info.get('sector') or ''), cur)
+            ml_horizon_label = st.selectbox(
+                "How far ahead should the model check?",
+                ["1 day · Tomorrow", "5 days · About one week", "20 days · About one month"],
+                index=1,
+                key=f'ml_horizon_{ticker}',
+            )
+            ml_horizon = int(ml_horizon_label.split()[0])
+            ml_result = ml_package['predictions'][ml_horizon]
+            ml_metrics = ml_result['metrics']
+            ml_gate_pass = not str(ml_result['quality']).startswith('No stable')
+            ml_extrapolative = ticker not in ml_package['artifact']['training_universe']
+            news_overlay_pp = {
+                'Confirmed positive': 3.0, 'Confirmed negative': -3.0,
+                'Positive · unconfirmed': 1.0, 'Negative · unconfirmed': -1.0,
+            }.get(news_signal['label'], 0.0)
+            if ml_extrapolative:
+                gate_status = 'This stock is outside the trained list'
+                gate_class = 'blocked'
+                gate_copy = (
+                    f'{ticker} was not one of the 24 stocks and ETFs used to train and test this model. '
+                    'The app can read its current market data, but it should not produce a prediction '
+                    'until this ticker is added to training and the model is tested again.'
+                )
+                direction_summary = 'Not tested for this stock'
+                decision_summary = 'No'
+                examples_label = 'Model-wide examples'
+                improvement_label = 'Model-wide result'
+                improvement_value = 'About 50/50'
+                bottom_line = f'Bottom line: add {ticker} to the historical training set and retrain before showing a probability.'
+            elif ml_gate_pass:
+                gate_status = 'Early research signal available'
+                gate_class = ''
+                gate_copy = (
+                    f"The model showed some historical improvement. Its early estimate is a "
+                    f"{ml_result['up_probability']:.0%} chance of a positive return over this period, "
+                    "but it is still research—not a buy or sell instruction."
+                )
+                direction_summary = f"{ml_metrics['balanced_accuracy']:.1%} in testing"
+                decision_summary = 'Research only'
+                examples_label = 'Historical examples checked'
+                improvement_label = 'Years it improved'
+                improvement_value = f"{int(ml_metrics['positive_brier_skill_folds'])} of {int(ml_metrics['folds'])}"
+                bottom_line = 'Bottom line: this remains an early research signal and should not replace the price or risk plan.'
+            else:
+                gate_status = 'Not reliable enough yet'
+                gate_class = 'blocked'
+                gate_copy = (
+                    'Do not use this model to decide whether to buy or sell. In unseen historical periods, '
+                    'its direction calls were roughly 50/50—similar to a coin flip. Your existing price and '
+                    'risk plan should stay unchanged.'
+                )
+                direction_summary = 'About 50/50'
+                decision_summary = 'No'
+                examples_label = 'Historical examples checked'
+                improvement_label = 'Years it improved'
+                improvement_value = f"{int(ml_metrics['positive_brier_skill_folds'])} of {int(ml_metrics['folds'])}"
+                bottom_line = 'Bottom line: more data and another round of testing are needed before this model should influence an investment decision.'
+            st.markdown(f"""
+            <div class="model-gate">
+              <div class="eyebrow">ANSWER · {ml_horizon_label.upper()}</div>
+              <div class="model-gate-status {gate_class}">{gate_status}</div>
+              <div class="model-gate-copy">{gate_copy}</div>
+            </div>
+            <div class="model-health">
+              <div class="stat-cell"><div class="stat-label">Direction test</div><div class="stat-value">{direction_summary}</div></div>
+              <div class="stat-cell"><div class="stat-label">Use for buy / sell?</div><div class="stat-value">{decision_summary}</div></div>
+              <div class="stat-cell"><div class="stat-label">{examples_label}</div><div class="stat-value">{int(ml_metrics['observations']):,}</div></div>
+              <div class="stat-cell"><div class="stat-label">{improvement_label}</div><div class="stat-value">{improvement_value}</div></div>
+            </div>
+            <div class="mobile-note">{bottom_line}</div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="mobile-card">
+              <div class="eyebrow">WHAT THE MODEL USES TODAY</div>
+              <div class="source-state"><div><div class="source-state-name">Price, volume &amp; market trend</div><div class="source-state-copy">{safe_ticker}, S&amp;P 500, Nasdaq and {ml_package['sector_symbol']} through {ml_result['feature_date']}.</div></div><span class="source-state-pill {'missing' if ml_extrapolative else 'ready'}">{'CURRENT DATA ONLY' if ml_extrapolative else 'INCLUDED'}</span></div>
+              <div class="source-state"><div><div class="source-state-name">Historical news reactions</div><div class="source-state-copy">Needed to learn whether similar news changed prices in the past.</div></div><span class="source-state-pill missing">STILL NEEDED</span></div>
+              <div class="source-state"><div><div class="source-state-name">Earnings and company events</div><div class="source-state-copy">Needed to measure earnings surprises and major SEC filings.</div></div><span class="source-state-pill missing">STILL NEEDED</span></div>
+              <div class="source-state"><div><div class="source-state-name">Options market expectations</div><div class="source-state-copy">Needed to learn from implied volatility, skew and open interest.</div></div><span class="source-state-pill missing">STILL NEEDED</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+            with st.expander("Technical validation details", expanded=False):
+                st.markdown(f"""
+                <div class="detail-card">
+                  <div class="detail-row"><span>Balanced accuracy</span><b>{ml_metrics['balanced_accuracy']:.1%}</b></div>
+                  <div class="detail-row"><span>Brier skill vs. baseline</span><b>{ml_metrics['brier_skill']:+.2%}</b></div>
+                  <div class="detail-row"><span>Return correlation</span><b>{ml_metrics['return_correlation']:+.3f}</b></div>
+                  <div class="detail-row"><span>Walk-forward years</span><b>2021–2025</b></div>
+                </div>
+                <div class="mobile-note">Balanced accuracy measures direction after accounting for up/down imbalance. Brier skill measures probability quality versus a simple historical base rate. These details are for model review, not everyday investing.</div>
+                """, unsafe_allow_html=True)
+            if ml_result['outlier_features']:
+                st.warning(f"{ml_result['outlier_features']} current factors are outside three training standard deviations. Treat raw output as out-of-distribution.")
+
+            if ml_extrapolative:
+                st.info(f"No experimental probability is shown for {ticker} because it was not part of the trained universe.")
+            else:
+                with st.expander("See the experimental estimate · not a recommendation", expanded=False):
+                    adjusted_probability = float(np.clip(
+                        ml_result['up_probability'] + news_overlay_pp / 100, .01, .99
+                    ))
+                    st.markdown(f"""
+                    <div class="stat-grid">
+                      <div class="stat-cell"><div class="stat-label">Base up probability</div><div class="stat-value">{ml_result['up_probability']:.1%}</div></div>
+                      <div class="stat-cell"><div class="stat-label">Expected return</div><div class="stat-value">{ml_result['expected_return']:+.2%}</div></div>
+                      <div class="stat-cell"><div class="stat-label">OOS residual scenario</div><div class="stat-value">${ml_result['range_low']:,.2f}–${ml_result['range_high']:,.2f}</div></div>
+                      <div class="stat-cell"><div class="stat-label">Current news overlay</div><div class="stat-value">{news_overlay_pp:+.1f} pp</div></div>
+                    </div>
+                    <div class="detail-card">
+                      <div class="detail-row"><span>Base ML probability</span><b>{ml_result['up_probability']:.1%}</b></div>
+                      <div class="detail-row"><span>Preview with news overlay</span><b>{adjusted_probability:.1%}</b></div>
+                      <div class="detail-row"><span>News status</span><b>{news_signal['label']}</b></div>
+                      <div class="detail-row"><span>Model trained through</span><b>{ml_package['artifact']['data_through']}</b></div>
+                    </div>
+                    <div class="mobile-note">The news overlay is deliberately separated because it has not been trained on a historical news archive. It is not part of the walk-forward score and must not be presented as validated probability.</div>
+                    """, unsafe_allow_html=True)
+                    st.markdown('<div class="eyebrow" style="margin:13px 3px 7px;">LARGEST MODEL CONTRIBUTIONS</div>', unsafe_allow_html=True)
+                    driver_html = ''.join(
+                        f'<div class="driver-row"><span>{html.escape(str(driver["label"]))}</span><span class="driver-{driver["direction"]}">{driver["direction"].upper()}</span></div>'
+                        for driver in ml_result['drivers']
+                    )
+                    st.markdown(f'<div class="mobile-card">{driver_html}</div>', unsafe_allow_html=True)
+        except Exception as exc:
+            st.error("The audited model could not run with the currently available benchmark data.")
+            with st.expander("Technical details"):
+                st.code(str(exc))
+
+with tab_overview:
+    view_price = analysis_price
+    view_basis = 'extended-hours preview' if extended_active else 'latest close'
+    if view_price < plan['stop']:
+        current_view = "RISK WARNING"
+        view_class = "view-risk"
+        price_guide = (
+            "Price is below the risk-review level. Recheck the original idea and avoid "
+            "treating a lower price as automatically safer."
+        )
+    elif view_price < plan['entry_low']:
+        current_view = "WATCH FOR STABILITY"
+        view_class = "view-wait"
+        price_guide = (
+            "Price is below the potential buy zone. A lower price is not automatically "
+            "safer—wait for the price to stabilize before making a decision."
+        )
+    elif view_price <= plan['entry_high']:
+        current_view = "WATCH FOR ENTRY"
+        view_class = "view-entry"
+        price_guide = (
+            "Price is inside the potential buy zone. Watch whether it holds this area; "
+            "a zone is not a guarantee that the price will bounce."
+        )
+    elif view_price < plan['target_1']:
+        current_view = "WAIT"
+        view_class = "view-wait"
+        price_guide = (
+            "Price is between the buy and sell watch zones. This is usually a wait-and-review "
+            "area rather than an obvious entry or exit."
+        )
+    elif view_price <= plan['target_2']:
+        current_view = "REVIEW PROFITS"
+        view_class = "view-profit"
+        price_guide = (
+            "Price is inside the potential sell / profit-taking zone. If you already own it, "
+            "review whether to hold or reduce; this is not a guaranteed top."
+        )
+    else:
+        current_view = "EXTENDED"
+        view_class = "view-risk"
+        price_guide = (
+            "Price is above the potential sell zone. Momentum may continue, but reversal risk "
+            "is higher; review the position instead of assuming it must keep rising."
+        )
+
+    buy_pct_low = (plan['entry_low'] / view_price - 1) * 100
+    buy_pct_high = (plan['entry_high'] / view_price - 1) * 100
+    sell_pct_low = (plan['target_1'] / view_price - 1) * 100
+    sell_pct_high = (plan['target_2'] / view_price - 1) * 100
+    risk_pct = (plan['stop'] / view_price - 1) * 100
+    distance_basis = 'after-hours price' if extended_active else 'latest close'
+    buy_distance = f"{min(buy_pct_low, buy_pct_high):+.1f}% to {max(buy_pct_low, buy_pct_high):+.1f}% vs {distance_basis}"
+    sell_distance = f"{min(sell_pct_low, sell_pct_high):+.1f}% to {max(sell_pct_low, sell_pct_high):+.1f}% vs {distance_basis}"
+    extended_card_html = ''
+    next_session_html = ''
+    if extended_active:
+        extended_class = 'positive' if extended_change >= 0 else 'negative'
+        extended_card_html = textwrap.dedent(f"""
+        <div class="session-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <div class="eyebrow">EXTENDED-HOURS PREVIEW</div>
+            <div class="session-live">{session_label}</div>
+          </div>
+          <div class="session-price">${analysis_price:.2f}</div>
+          <div class="{extended_class}">{extended_change:+.2f}% <span class="session-meta">vs official close · {extended_time_text}</span></div>
+          <div class="session-meta" style="margin-top:7px;">Used to preview distance from the watch zones. Trend, moving averages and official signals remain based on the completed regular session.</div>
+        </div>
+        """).strip()
+        if view_price < plan['stop']:
+            readiness_title = 'Risk review before considering an entry'
+            readiness_class = 'readiness-risk'
+            readiness_copy = (
+                'The extended-hours price is below the risk-review level. A lower price is not '
+                'automatically a better entry; wait for the regular session to reclaim the level.'
+            )
+        elif plan['entry_low'] <= view_price <= plan['entry_high']:
+            readiness_title = 'Inside the entry watch zone — confirmation still needed'
+            readiness_class = 'readiness-good'
+            readiness_copy = (
+                'The location is relevant, but an extended-hours trade is not confirmation. '
+                'Watch whether regular-session price holds the zone with a fresh two-sided quote.'
+            )
+        elif view_price < plan['entry_low']:
+            readiness_title = 'Below the planned entry zone — wait for stabilization'
+            readiness_class = 'readiness-risk'
+            readiness_copy = (
+                'Do not automatically move the entry zone lower. Look for a reclaim of the zone '
+                'or a new regular-session structure before reassessing.'
+            )
+        elif view_price < plan['target_1']:
+            readiness_title = 'Between the entry and profit zones — avoid chasing'
+            readiness_class = 'readiness-wait'
+            readiness_copy = (
+                'The stock is not near the planned entry. Let the next regular session show '
+                'whether price pulls back or builds a new base.'
+            )
+        elif view_price <= plan['target_2']:
+            readiness_title = 'Inside the profit-review zone'
+            readiness_class = 'readiness-wait'
+            readiness_copy = (
+                'If already holding, review whether to trim or protect gains. If not holding, '
+                'this is not an attractive place to chase a planned entry.'
+            )
+        else:
+            readiness_title = 'Above the planned profit zone — extended risk'
+            readiness_class = 'readiness-risk'
+            readiness_copy = (
+                'Momentum may continue, but the setup is stretched relative to the current map. '
+                'Wait for regular-session confirmation instead of assuming the gap will hold.'
+            )
+        volume_text = f'{extended_volume:,.0f} shares reported · {participation_text}'
+        next_session_html = textwrap.dedent(f"""
+        <div class="next-plan">
+          <div class="next-plan-head">
+            <div><div class="eyebrow">NEXT SESSION PLAN</div><div class="next-plan-title {readiness_class}">{readiness_title}</div></div>
+            <div class="confidence-pill">{extended_confidence.upper()} DATA CONFIDENCE</div>
+          </div>
+          <div class="mini-copy">{readiness_copy}</div>
+          <div class="plan-row"><div class="plan-row-title">If the next session opens inside ${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div><div class="plan-row-copy">Watch whether price holds the zone during the first 15–30 minutes. Use a fresh regular-session Bid/Ask before considering a limit price.</div></div>
+          <div class="plan-row"><div class="plan-row-title">If it opens above ${plan['entry_high']:.2f}</div><div class="plan-row-copy">Do not chase automatically. Wait for a pullback toward the planned zone or a new base supported by regular-session volume.</div></div>
+          <div class="plan-row"><div class="plan-row-title">If it opens below ${plan['stop']:.2f}</div><div class="plan-row-copy">Treat the original setup as needing review. Avoid calling the lower price a bargain until structure stabilizes.</div></div>
+          <div class="plan-row"><div class="plan-row-title">Extended-hours participation</div><div class="plan-row-copy">{volume_text}. Yahoo trade bars do not provide a consolidated live Bid/Ask, so confidence is capped below “High.”</div></div>
+        </div>
+        """).strip()
+    news_signal_html = textwrap.dedent(f"""
+    <div class="mobile-card" style="margin:9px 0 12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+        <div><div class="eyebrow">NEWS SIGNAL · HEURISTIC</div><div class="value {news_signal['css']}">{news_signal['label']}</div></div>
+        <div class="confidence-pill">{news_signal['strength'].upper()} EVIDENCE</div>
+      </div>
+      <div class="mini-copy" style="margin-top:7px;">{news_signal['copy']} <b>{news_signal['impact']}.</b></div>
+      <div class="mini-copy" style="margin-top:6px;">Noise {news_signal['noise_score']}/100 · {news_signal['unique']} unique headlines · {news_signal['material']} material events · market reaction {news_market_reaction:+.2f}% ({news_reaction_basis})</div>
+    </div>
+    """).strip()
+
+    st.markdown(f"""
+    <div class="price-panel">
+      <div class="eyebrow">Latest close · {data_as_of}</div>
+      <div class="hero-price">${cur:.2f}</div>
+      <div class="{change_class}">{chg_1d:+.2f}% <span class="mini-copy">last session</span></div>
+    </div>
+{extended_card_html}
+{next_session_html}
+{news_signal_html}
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">Market structure</div><div class="stat-value">{regime}</div></div>
+      <div class="stat-cell"><div class="stat-label">1-month move</div><div class="stat-value">{chg_20d:+.2f}%</div></div>
+    </div>
+    <div class="view-banner">
+      <div class="view-copy">
+        <div class="eyebrow">Current view · {view_basis}</div>
+        <div class="view-description">{price_guide}</div>
+      </div>
+      <div class="view-badge {view_class}">{current_view}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if extended_active and not intraday.empty:
+        st.markdown(
+            '<div class="chart-hint">Extended-hours trades can be thin or volatile. '
+            'Drag to move · Use + / − to zoom</div>',
+            unsafe_allow_html=True,
+        )
+        extended_chart = build_extended_hours_chart(intraday, cur)
+        st.plotly_chart(extended_chart, width='stretch', config={
+            'displayModeBar': True, 'displaylogo': False, 'scrollZoom': False,
+            'doubleClick': 'reset+autosize', 'responsive': True,
+            'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'toggleSpikelines'],
+        })
+
+    st.markdown(
+        '<div class="chart-hint">Drag to move · Use + / − to zoom · '
+        'Tap a candle for OHLC · Reset axes to return</div>',
+        unsafe_allow_html=True
+    )
+    chart = build_mobile_chart(df, chart_window)
+    st.plotly_chart(chart, width='stretch', config={
+        'displayModeBar': True, 'displaylogo': False, 'scrollZoom': False,
+        'doubleClick': 'reset+autosize', 'responsive': True,
+        'modeBarButtonsToRemove': [
+            'select2d', 'lasso2d', 'autoScale2d', 'toggleSpikelines'
+        ]
+    })
+
+    st.markdown(f"""
+    <div class="eyebrow" style="margin:16px 3px 8px;">SIMPLE PRICE GUIDE · RESEARCH ONLY</div>
+    <div class="plan-strip">
+      <div class="mobile-card"><div class="eyebrow">Potential buy zone</div><div class="value lime">${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div><div class="mini-copy">{buy_distance}</div></div>
+      <div class="mobile-card"><div class="eyebrow">Potential sell / trim zone</div><div class="value purple">${plan['target_1']:.2f}–${plan['target_2']:.2f}</div><div class="mini-copy">{sell_distance}</div></div>
+    </div>
+    <div class="mobile-card" style="margin-top:7px;">
+      <div class="eyebrow">If price falls below</div>
+      <div class="value red">${plan['stop']:.2f}</div>
+      <div class="mini-copy">{risk_pct:+.1f}% vs {distance_basis} · Reconsider the idea and review risk.</div>
+    </div>
+    <div class="mobile-note">These ranges are calculated from recent price structure and volatility. They help users plan what to watch; they are not personalized advice, guaranteed prices or automatic orders.</div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Data source & quality", expanded=False):
+        st.markdown(f"""
+        <div class="detail-card" style="margin-top:0;">
+          <div class="detail-row"><span>Provider</span><b>{provider}</b></div>
+          <div class="detail-row"><span>Price type</span><b>Official daily close · USD</b></div>
+          <div class="detail-row"><span>As of</span><b>{quality['as_of']}</b></div>
+          <div class="detail-row"><span>Integrity check</span><b>{quality_note}</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with st.expander("How to read this page"):
+        st.markdown(f"""
+**Latest close** tells you what happened in the most recent completed session—not what happens next.
+
+**{regime} regime** describes the current price structure. `Range` means price is moving without clean one-way moving-average alignment.
+
+**Candlesticks** show each session's open, high, low and close. The purple line is the 20-session average; being above it describes relative position, not a promise of further gains.
+
+**Potential buy zone** is the nearby area where price may find support. Consider it only if price begins to stabilize; it is not a guaranteed bargain.
+
+**Potential sell / trim zone** is where recent price history suggests selling pressure may increase. If you already own the security, this is an area to review profit-taking—not a guaranteed top.
+
+**If price falls below** marks where the current idea may no longer be working and deserves a risk review. It is not an automatic sell order.
+        """)
+
+with signal_trend:
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">Price regime</div><div class="stat-value">{regime}</div></div>
+      <div class="stat-cell"><div class="stat-label">MA alignment</div><div class="stat-value">{alignment_label}</div></div>
+      <div class="stat-cell"><div class="stat-label">Price vs. 20D</div><div class="stat-value">{(cur/ma20-1)*100:+.2f}%</div></div>
+      <div class="stat-cell"><div class="stat-label">Price vs. 200D</div><div class="stat-value">{(cur/ma200-1)*100:+.2f}%</div></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-row"><span>20-day average</span><b>${ma20:.2f}</b></div>
+      <div class="detail-row"><span>50-day average</span><b>${ma50:.2f}</b></div>
+      <div class="detail-row"><span>200-day average</span><b>${ma200:.2f}</b></div>
+      <div class="detail-row"><span>Trend alignment</span><b>{alignment_label}</b></div>
+    </div>
+    <div class="eyebrow" style="margin:18px 3px 8px;">TRAILING RETURNS</div>
+    <div class="detail-card">
+      <div class="detail-row"><span>1 week</span><b>{returns_by_horizon['1 week']:+.2f}%</b></div>
+      <div class="detail-row"><span>1 month</span><b>{returns_by_horizon['1 month']:+.2f}%</b></div>
+      <div class="detail-row"><span>3 months</span><b>{returns_by_horizon['3 months']:+.2f}%</b></div>
+      <div class="detail-row"><span>1 year</span><b>{returns_by_horizon['1 year']:+.2f}%</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with signal_momentum:
+    macd_state = "Above signal" if macd > macd_signal else "Below signal"
+    rsi_state = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">RSI (14)</div><div class="stat-value">{rsi:.1f}</div></div>
+      <div class="stat-cell"><div class="stat-label">RSI state</div><div class="stat-value">{rsi_state}</div></div>
+      <div class="stat-cell"><div class="stat-label">MACD</div><div class="stat-value">{macd:.2f}</div></div>
+      <div class="stat-cell"><div class="stat-label">Volume ratio</div><div class="stat-value">{vol/vol_ma:.2f}×</div></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-row"><span>MACD signal</span><b>{macd_signal:.2f}</b></div>
+      <div class="detail-row"><span>MACD position</span><b>{macd_state}</b></div>
+      <div class="detail-row"><span>20-session return</span><b>{chg_20d:+.2f}%</b></div>
+      <div class="detail-row"><span>Latest volume</span><b>{vol/1e6:.1f}M</b></div>
+      <div class="detail-row"><span>20D average volume</span><b>{vol_ma/1e6:.1f}M</b></div>
+    </div>
+    <div class="mobile-note">Momentum confirms or contradicts trend; it does not establish fair value and can reverse quickly around news or earnings.</div>
+    """, unsafe_allow_html=True)
+
+with tab_risk:
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">20D annualized vol.</div><div class="stat-value">{risk['vol20']:.1f}%</div></div>
+      <div class="stat-cell"><div class="stat-label">60D annualized vol.</div><div class="stat-value">{risk['vol60']:.1f}%</div></div>
+      <div class="stat-cell"><div class="stat-label">1Y max drawdown</div><div class="stat-value">{risk['max_drawdown']:.1f}%</div></div>
+      <div class="stat-cell"><div class="stat-label">From 1Y high</div><div class="stat-value">{risk['from_high']:.1f}%</div></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-row"><span>ATR (14)</span><b>${atr:.2f}</b></div>
+      <div class="detail-row"><span>ATR / price</span><b>{atr_p:.2f}%</b></div>
+      <div class="detail-row"><span>Historical 95% daily VaR</span><b>{risk['var95']:.2f}%</b></div>
+      <div class="detail-row"><span>Beta</span><b>{f'{beta:.2f}' if beta else '—'}</b></div>
+      <div class="detail-row"><span>Reference risk threshold</span><b>${plan['stop']:.2f}</b></div>
+    </div>
+    <div class="mobile-note">Historical VaR means roughly 5% of observed sessions were worse than this return. It is not a maximum-loss estimate; gaps and crises can be much worse.</div>
+    """, unsafe_allow_html=True)
+
+with tab_options:
+    option_spot = analysis_price
+    option_spot_label = ('extended-hours stock price' if extended_active else 'latest regular close')
+    desired_days = {
+        'Tactical (1–10 days)': 30,
+        'Swing (2–8 weeks)': 75,
+        'Position (2–12 months)': 180,
+    }[horizon]
+    st.markdown(f"""
+    <div class="option-hero">
+      <div class="eyebrow">OPTIONS LAB · BEGINNER MODE</div>
+      <div class="option-hero-value">What could I gain or lose?</div>
+      <div class="option-hero-copy">This page does not predict whether {safe_ticker} will rise or fall. It helps you test an idea and understand the cost, break-even price and worst case before taking any action.</div>
+    </div>
+    <div class="guide-steps">
+      <div class="guide-step"><div class="guide-number">1</div><div><div class="guide-title">Start with your opinion</div><div class="guide-copy">Use the Price and Trend pages first, then choose whether you think the stock may rise or fall.</div></div></div>
+      <div class="guide-step"><div class="guide-number">2</div><div><div class="guide-title">Choose how much time you want</div><div class="guide-copy">More time normally costs more. Very short expirations lose value faster.</div></div></div>
+      <div class="guide-step"><div class="guide-number">3</div><div><div class="guide-title">Read the four answers</div><div class="guide-copy">Focus on pay today, break-even price, maximum loss and maximum profit. Everything technical is optional.</div></div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if extended_active:
+        st.info(
+            f"{session_label.title()} stock price: ${option_spot:,.2f}. "
+            "Option premiums below may still be from the last option session. The app uses "
+            "the extended-hours stock price only for clearly labeled scenario estimates."
+        )
+
+    option_session_key = f'options_loaded_{ticker}'
+    if st.button("Start an options scenario", key=f'load_options_{ticker}',
+                 type="primary", width="stretch"):
+        st.session_state[option_session_key] = True
+
+    if not st.session_state.get(option_session_key, False):
+        st.markdown("""
+        <div class="detail-card">
+          <div class="detail-row"><span>You will choose</span><b>Direction · Time · Risk style</b></div>
+          <div class="detail-row"><span>You will learn</span><b>Cost · Break-even · Max loss</b></div>
+          <div class="detail-row"><span>Trading</span><b>None — research only</b></div>
+        </div>
+        <div class="mobile-note">Quotes are loaded only when requested and may be delayed. Starting the scenario does not buy or sell anything.</div>
+        """, unsafe_allow_html=True)
+    else:
+        try:
+            expirations = fetch_option_expirations(ticker)
+            if not expirations:
+                raise ValueError('No listed option expirations were returned for this symbol.')
+            expiration_dates = [pd.Timestamp(value) for value in expirations]
+            today = pd.Timestamp.now().normalize()
+            preferred = next(
+                (i for i, value in enumerate(expiration_dates)
+                 if (value - today).days >= desired_days),
+                len(expirations) - 1,
+            )
+
+            control_left, control_right = st.columns(2)
+            with control_left:
+                view_choice = st.selectbox(
+                    "1. What do you think may happen?",
+                    ["Price may rise", "Price may fall"],
+                    index=0 if regime in ('Uptrend', 'Recovery') or chg_20d >= 0 else 1,
+                    key=f'option_view_{ticker}',
+                )
+                option_view = 'Bullish' if view_choice == "Price may rise" else 'Bearish'
+            with control_right:
+                expiration = st.selectbox(
+                    "2. How much time do you want?", expirations, index=preferred,
+                    format_func=lambda value: (
+                        f"{pd.Timestamp(value).strftime('%b %d, %Y')} · "
+                        f"{max(0, (pd.Timestamp(value) - today).days)} days"
+                    ),
+                    key=f'option_expiration_{ticker}',
+                )
+            option_type = 'call' if option_view == 'Bullish' else 'put'
+            if option_type == 'call':
+                strategy_map = {
+                    "Buy a call · simpler, profit is not capped": "Long Call",
+                    "Call spread · lower cost, profit is capped": "Call Debit Spread",
+                }
+            else:
+                strategy_map = {
+                    "Buy a put · simpler, benefits from a decline": "Long Put",
+                    "Put spread · lower cost, profit is capped": "Put Debit Spread",
+                }
+            strategy_choice = st.selectbox(
+                "3. How do you want to limit the risk?", list(strategy_map),
+                key=f'option_strategy_{ticker}_{option_type}',
+            )
+            strategy = strategy_map[strategy_choice]
+            st.caption("A spread normally costs less, but it also limits how much you can make.")
+            expiration_date = pd.Timestamp(expiration)
+            dte = max(0, int((expiration_date - today).days))
+            dividend = min(max(finite(info.get('dividendYield')), 0), .20)
+            rate = .04
+            chain = fetch_option_chain(ticker, expiration, option_type)
+            chain = enrich_option_chain(
+                chain, option_spot, dte, rate, dividend, option_type,
+                max(risk['vol60'] / 100, .10),
+            )
+            chain['dte'] = dte
+            chain = chain.loc[(chain['mid'] > 0) & chain['strike'].between(option_spot * .65, option_spot * 1.35)].copy()
+            if chain.empty:
+                raise ValueError('No usable contracts with valid prices were returned for this expiration.')
+            chain['rank'] = (abs(chain['strike'] / option_spot - 1) +
+                             chain['spreadPct'].fillna(100).clip(0, 100) / 220 +
+                             np.where(chain['openInterest'] >= 100, 0, .20))
+            chain = chain.sort_values(['rank', 'strike'])
+            contracts = chain['contractSymbol'].astype(str).tolist()
+
+            selected_symbol = st.selectbox(
+                "4. Choose a strike price", contracts,
+                format_func=lambda symbol: (
+                    f"Strike ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
+                    f"about ${finite(chain.loc[chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f} per contract"
+                ),
+                key=f'option_contract_{ticker}_{expiration}_{option_type}',
+            )
+            long_row = chain.loc[chain['contractSymbol'].eq(selected_symbol)].iloc[0]
+            long_strike = finite(long_row['strike'])
+            long_mid = finite(long_row['mid'])
+            short_row = None
+
+            if 'Spread' in strategy:
+                if option_type == 'call':
+                    short_chain = chain.loc[chain['strike'] > long_strike].sort_values('strike')
+                    reference = plan['target_1']
+                else:
+                    short_chain = chain.loc[chain['strike'] < long_strike].sort_values('strike', ascending=False)
+                    reference = plan['stop']
+                if short_chain.empty:
+                    raise ValueError('No compatible short leg was returned for this spread.')
+                short_symbols = short_chain['contractSymbol'].astype(str).tolist()
+                default_short = int(np.abs(short_chain['strike'].to_numpy() - reference).argmin())
+                with st.expander("Adjust the spread's profit cap (optional)", expanded=False):
+                    st.caption("The app has selected a second strike. Changing it changes both the cost and maximum profit.")
+                    short_symbol = st.selectbox(
+                        "Second strike", short_symbols, index=default_short,
+                        format_func=lambda symbol: (
+                            f"${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'strike'].iloc[0]):,.2f} · "
+                            f"market value about ${finite(short_chain.loc[short_chain['contractSymbol'].eq(symbol), 'mid'].iloc[0]) * 100:,.0f}"
+                        ),
+                        key=f'option_short_{ticker}_{expiration}_{option_type}',
+                    )
+                short_row = short_chain.loc[short_chain['contractSymbol'].eq(short_symbol)].iloc[0]
+
+            long_score, long_label, quality_notes = contract_quality(long_row, desired_days)
+            quality_score = long_score
+            if short_row is not None:
+                short_score, _, short_notes = contract_quality(short_row, desired_days)
+                quality_score = min(long_score, short_score)
+                quality_notes = list(dict.fromkeys(quality_notes + short_notes))
+                quality_label = ('Excellent' if quality_score >= 80 else 'Good' if quality_score >= 65
+                                 else 'Mixed' if quality_score >= 45 else 'Poor')
+            else:
+                quality_label = long_label
+
+            short_mid = finite(short_row['mid']) if short_row is not None else 0.0
+            short_strike = finite(short_row['strike']) if short_row is not None else 0.0
+            debit = long_mid - short_mid
+            if debit <= 0:
+                raise ValueError('The selected quote does not produce a positive debit. Try another contract.')
+            if option_type == 'call':
+                breakeven = long_strike + debit
+                width = short_strike - long_strike if short_row is not None else np.nan
+                max_profit = ((width - debit) * 100 if short_row is not None else np.inf)
+            else:
+                breakeven = long_strike - debit
+                width = long_strike - short_strike if short_row is not None else np.nan
+                max_profit = ((width - debit) * 100 if short_row is not None
+                              else max(0.0, breakeven) * 100)
+            max_loss = debit * 100
+            if short_row is not None and (width <= 0 or debit >= width):
+                raise ValueError('This spread quote has an invalid risk/reward width. Try another pair.')
+
+            iv = max(finite(long_row['modelIV']), .01)
+            iv_is_estimated = bool(long_row.get('ivEstimated', False))
+            iv_label = ('Historical-volatility estimate' if iv_is_estimated else 'Implied volatility')
+            net_delta = finite(long_row['delta']) - (finite(short_row['delta']) if short_row is not None else 0)
+            net_gamma = finite(long_row['gamma']) - (finite(short_row['gamma']) if short_row is not None else 0)
+            net_theta = finite(long_row['theta']) - (finite(short_row['theta']) if short_row is not None else 0)
+            net_vega = finite(long_row['vega']) - (finite(short_row['vega']) if short_row is not None else 0)
+            greeks_label = 'STRATEGY GREEKS' if short_row is not None else 'GREEKS · LONG LEG'
+            implied_move = option_spot * iv * math.sqrt(max(dte, 1) / 365)
+            spread_pct = finite(long_row['spreadPct'], 999)
+            spread_display = (f'{spread_pct:.1f}%' if np.isfinite(spread_pct) and spread_pct < 900
+                              else 'Unavailable')
+            score_notes = ' · '.join(quality_notes)
+            max_profit_text = 'Not capped' if np.isinf(max_profit) else f'${max_profit:,.0f}'
+            expiration_pretty = expiration_date.strftime('%b %d, %Y')
+            long_two_sided = (finite(long_row.get('bid')) > 0 and
+                              finite(long_row.get('ask')) >= finite(long_row.get('bid')))
+            short_two_sided = (short_row is None or
+                               (finite(short_row.get('bid')) > 0 and
+                                finite(short_row.get('ask')) >= finite(short_row.get('bid'))))
+            two_sided_quote = long_two_sided and short_two_sided
+            if short_row is None:
+                quote_low = finite(long_row.get('bid'))
+                quote_high = finite(long_row.get('ask'))
+            else:
+                quote_low = max(0.0, finite(long_row.get('bid')) - finite(short_row.get('ask')))
+                quote_high = max(0.0, finite(long_row.get('ask')) - finite(short_row.get('bid')))
+            quote_is_live = market_state == 'REGULAR'
+            suggested_limit_available = (quote_is_live and two_sided_quote and
+                                         spread_pct <= 20 and quality_score >= 45 and
+                                         quote_high >= debit > 0)
+            if suggested_limit_available:
+                purchase_title = f'Start near ${debit:.2f} with a limit order'
+                purchase_copy = (
+                    f'Current quoted range is ${quote_low:.2f}–${quote_high:.2f} per share '
+                    f'(${quote_low * 100:,.0f}–${quote_high * 100:,.0f} per contract). '
+                    'The midpoint is a starting reference, not a guaranteed execution price.'
+                )
+                purchase_badge = 'LIVE QUOTE'
+            else:
+                purchase_title = 'No reliable purchase price right now'
+                if extended_active:
+                    purchase_copy = (
+                        f'The stock is using a {session_label.lower()} preview, but this option '
+                        'premium may be from the last option session. Wait for a fresh two-sided '
+                        'option quote before choosing a limit price.'
+                    )
+                elif market_state != 'REGULAR':
+                    purchase_copy = (
+                        'The option market is not in its regular session. The amount below is a '
+                        'scenario estimate, not a suggested order price.'
+                    )
+                else:
+                    purchase_copy = (
+                        'The quote is incomplete, too wide or lacks enough liquidity. The app '
+                        'will not manufacture a suggested limit price.'
+                    )
+                purchase_badge = 'WAIT FOR QUOTE'
+            move_to_breakeven = (breakeven / option_spot - 1) * 100
+            if option_type == 'call':
+                profit_condition = f'above ${breakeven:,.2f}'
+                move_explanation = f'{abs(move_to_breakeven):.1f}% above today' if move_to_breakeven >= 0 else f'{abs(move_to_breakeven):.1f}% below today'
+                plain_title = f'{safe_ticker} needs to finish above ${breakeven:,.2f}'
+                direction_copy = 'You selected a rising-price idea.'
+            else:
+                profit_condition = f'below ${breakeven:,.2f}'
+                move_explanation = f'{abs(move_to_breakeven):.1f}% below today' if move_to_breakeven <= 0 else f'{abs(move_to_breakeven):.1f}% above today'
+                plain_title = f'{safe_ticker} needs to finish below ${breakeven:,.2f}'
+                direction_copy = 'You selected a falling-price idea.'
+            st.markdown(f"""
+            <div class="plain-answer">
+              <div class="eyebrow">YOUR SCENARIO IN PLAIN ENGLISH</div>
+              <div class="plain-answer-title">{plain_title} on {expiration_pretty}</div>
+              <div class="plain-answer-copy">{direction_copy} At expiration, the stock must be {profit_condition} for this position to have a profit before fees. That break-even level is {move_explanation}. The cost and maximum loss below are estimates based on the latest available option quote.</div>
+              <span class="answer-chip">Stock now ${option_spot:,.2f}</span>
+              <span class="answer-chip green">Break-even ${breakeven:,.2f}</span>
+              <span class="answer-chip red">Max loss ${max_loss:,.0f}</span>
+            </div>
+            <div class="mobile-card" style="margin:8px 0;">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <div><div class="eyebrow">PURCHASE PRICE CHECK</div><div class="value">{purchase_title}</div></div>
+                <span class="risk-defined">{purchase_badge}</span>
+              </div>
+              <div class="mini-copy" style="margin-top:7px;">{purchase_copy}</div>
+            </div>
+            <div class="stat-grid">
+              <div class="stat-cell"><div class="stat-label">Scenario cost · 1 contract</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Needs to finish</div><div class="stat-value">{profit_condition}</div></div>
+              <div class="stat-cell"><div class="stat-label">Estimated maximum loss</div><div class="stat-value">${max_loss:,.0f}</div></div>
+              <div class="stat-cell"><div class="stat-label">Most you can make</div><div class="stat-value">{max_profit_text}</div></div>
+            </div>
+            <div class="mobile-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                <div><div class="eyebrow">QUOTE &amp; LIQUIDITY CHECK</div><div class="value">{quality_label} · {quality_score}/100</div></div>
+                <span class="risk-defined">LOSS CAPPED</span>
+              </div>
+              <div class="quality-bar"><div class="quality-fill" style="width:{quality_score}%;"></div></div>
+              <div class="mini-copy">This checks whether the quote may be costly or difficult to trade. It does not measure the chance of profit. {score_notes}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if quality_score < 45:
+                st.warning("This quote has weak liquidity or an unusually wide spread. The displayed cost may be hard to obtain in the market.")
+
+            with st.expander("Advanced option details · optional", expanded=False):
+                st.markdown(f"""
+                <div class="detail-card">
+                  <div class="detail-row"><span>Expiration</span><b>{expiration_pretty} · {dte} days</b></div>
+                  <div class="detail-row"><span>Bid / ask</span><b>${finite(long_row['bid']):.2f} / ${finite(long_row['ask']):.2f}</b></div>
+                  <div class="detail-row"><span>Cost between bid and ask</span><b>{spread_display}</b></div>
+                  <div class="detail-row"><span>Contracts traded / open</span><b>{finite(long_row['volume']):,.0f} / {finite(long_row['openInterest']):,.0f}</b></div>
+                  <div class="detail-row"><span>{iv_label}</span><b>{iv*100:.1f}%</b></div>
+                  <div class="detail-row"><span>Market-implied price range</span><b>${max(0, option_spot-implied_move):,.2f}–${option_spot+implied_move:,.2f}</b></div>
+                </div>
+                <div class="eyebrow" style="margin:16px 3px 8px;">{greeks_label}</div>
+                <div class="stat-grid">
+                  <div class="stat-cell"><div class="stat-label">Stock sensitivity · Delta</div><div class="stat-value">about ${net_delta * 100:+.0f} per $1 move</div></div>
+                  <div class="stat-cell"><div class="stat-label">Daily time effect · Theta</div><div class="stat-value">about ${net_theta * 100:+.0f}/day</div></div>
+                  <div class="stat-cell"><div class="stat-label">Delta change · Gamma</div><div class="stat-value">{net_gamma:.4f}</div></div>
+                  <div class="stat-cell"><div class="stat-label">Volatility effect · Vega</div><div class="stat-value">${net_vega * 100:.0f}/point</div></div>
+                </div>
+                <div class="mobile-note">These are changing model estimates, not promises. Delta means the estimated dollar change for one contract when the stock moves $1. Theta estimates one day of time loss, assuming other inputs stay the same.</div>
+                """, unsafe_allow_html=True)
+
+            earnings_value = info.get('earningsTimestamp')
+            try:
+                earnings_date = pd.to_datetime(float(earnings_value), unit='s').normalize()
+                if today <= earnings_date <= expiration_date:
+                    st.warning(f"Earnings are expected around {earnings_date.strftime('%b %d, %Y')}, before this option expires. IV and gap risk may be elevated.")
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+            max_scenario_days = max(dte, 1)
+            default_days = min(max_scenario_days, 7 if desired_days == 30 else 30 if desired_days == 75 else 60)
+            scenario_days = st.slider(
+                "What if this many days pass?", 0, max_scenario_days, default_days,
+                key=f'option_scenario_days_{ticker}_{expiration}_{selected_symbol}',
+            )
+            remaining_years = max(dte - scenario_days, 0) / 365
+            if option_type == 'call':
+                price_scenarios = [
+                    ('Falls to the risk level', plan['stop']),
+                    ('Stays near the current stock price', option_spot),
+                    ('Reaches the first upside level', plan['target_1']),
+                    ('Reaches the stretch level', plan['target_2']),
+                ]
+            else:
+                price_scenarios = [
+                    ('Falls to the lower reference', plan['stop']),
+                    ('Falls about 10%', option_spot * .90),
+                    ('Stays near the current stock price', option_spot),
+                    ('Rises about 5%', option_spot * 1.05),
+                ]
+            iv_scenarios = [('IV −20%', .80), ('IV unchanged', 1.00), ('IV +20%', 1.20)]
+            scenario_rows = []
+            for price_label, future_spot in price_scenarios:
+                values = []
+                for _, iv_factor in iv_scenarios:
+                    long_value = option_model(
+                        future_spot, long_strike, remaining_years, rate, dividend,
+                        max(iv * iv_factor, .01), option_type,
+                    )['price']
+                    short_value = 0.0
+                    if short_row is not None:
+                        short_iv = (iv if iv_is_estimated or bool(short_row.get('ivEstimated', False))
+                                    else max(finite(short_row['modelIV']), .01))
+                        short_value = option_model(
+                            future_spot, short_strike, remaining_years, rate, dividend,
+                            max(short_iv * iv_factor, .01), option_type,
+                        )['price']
+                    strategy_value = long_value - short_value
+                    if short_row is not None:
+                        strategy_value = min(max(strategy_value, 0.0), width)
+                    values.append((strategy_value - debit) * 100)
+                scenario_rows.append((price_label, future_spot, values))
+            table_rows = ''.join(
+                '<tr><td>{}</td><td>${:,.0f}</td>{}</tr>'.format(
+                    label, price,
+                    ''.join(f'<td>{value:+,.0f}</td>' for value in values),
+                )
+                for label, price, values in scenario_rows
+            )
+            simple_rows = ''.join(
+                '<div class="detail-row"><span>{} · stock ${:,.0f}</span><b>{:+,.0f}</b></div>'.format(
+                    label, price, values[1]
+                )
+                for label, price, values in scenario_rows
+            )
+            st.markdown(f"""
+            <div class="eyebrow" style="margin:16px 3px 7px;">WHAT-IF ESTIMATE AFTER {scenario_days} DAYS · 1 CONTRACT</div>
+            <div class="detail-card">
+              {simple_rows}
+            </div>
+            <div class="mobile-note">Positive numbers mean an estimated gain; negative numbers mean an estimated loss. These estimates assume volatility stays about the same and are not executable prices.</div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Advanced what-if table · volatility changes", expanded=False):
+                st.markdown(f"""
+                <div class="mobile-card" style="padding:6px 8px;overflow-x:auto;">
+                  <table class="option-table">
+                    <thead><tr><th>Stock case</th><th>Price</th><th>Volatility lower</th><th>About same</th><th>Volatility higher</th></tr></thead>
+                    <tbody>{table_rows}</tbody>
+                  </table>
+                </div>
+                <div class="mobile-note">Option prices can change even when the stock price does not. Higher volatility often raises option value; lower volatility often reduces it.</div>
+                """, unsafe_allow_html=True)
+
+            with st.expander("New investor help", expanded=False):
+                st.markdown("""
+**Call:** a position used when you think the stock may rise.  
+**Put:** a position used when you think the stock may fall.  
+**Strike:** the contract's reference price. It is not what you pay.  
+**Expiration:** the date the option ends. It can expire worthless.  
+**Break-even:** the stock price needed at expiration to recover the amount paid, before fees.  
+**Spread:** combines two options to reduce cost, while also limiting profit.
+
+Start with **what you pay** and **maximum loss**. If losing the entire amount would be unacceptable, the position is too large. The score on this page checks quote quality—not whether the trade will win.
+                """)
+        except Exception as exc:
+            st.error("Option-chain data is unavailable right now. The stock research pages still work normally.")
+            with st.expander("Options technical details"):
+                st.code(str(exc))
+
+with research_evidence:
+    evidence_html = ''.join(
+        f"""<div class="detail-card">
+          <div class="detail-row"><span>Forward horizon</span><b>{row['horizon']}</b></div>
+          <div class="detail-row"><span>Historical observations</span><b>{row['sample']}</b></div>
+          <div class="detail-row"><span>Sample quality</span><b>{row['reliability']}</b></div>
+          <div class="detail-row"><span>Median forward return</span><b>{row['median']:+.2f}%</b></div>
+          <div class="detail-row"><span>Positive-return frequency</span><b>{row['hit_rate']:.1f}%</b></div>
+          <div class="detail-row"><span>10th-percentile outcome</span><b>{row['worst']:+.2f}%</b></div>
+        </div>"""
+        for row in evidence_rows
+    )
+    st.markdown(f"""
+    <div class="price-panel">
+      <div class="eyebrow">CURRENT PRICE-STRUCTURE REGIME</div>
+      <div class="hero-price" style="font-size:25px;">{regime}</div>
+      <div class="mini-copy">Historical analogs from this ticker's downloaded history</div>
+    </div>
+    {evidence_html}
+    <div class="mobile-note">Evidence is descriptive, not a forecast. Observations are spaced by the forward horizon to reduce overlap, but small samples, regime change and repeated testing can still mislead. A credible model must later be tested on unseen data and against a benchmark.</div>
+    """, unsafe_allow_html=True)
+
+with research_company:
+    sector_text = html.escape(str(info.get('sector') or '—'))
+    industry_text = html.escape(str(info.get('industry') or '—'))
+    employees = finite(info.get('fullTimeEmployees'))
+    revenue_growth = finite(info.get('revenueGrowth'))
+    profit_margin = finite(info.get('profitMargins'))
+    summary = html.escape(str(info.get('longBusinessSummary') or 'No company summary was returned.'))
+    if len(summary) > 900:
+        summary = summary[:897] + '…'
+    st.markdown(f"""
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">Market cap</div><div class="stat-value">{market_cap_text}</div></div>
+      <div class="stat-cell"><div class="stat-label">P/E ratio</div><div class="stat-value">{f'{pe:.1f}×' if pe else '—'}</div></div>
+      <div class="stat-cell"><div class="stat-label">52-week range</div><div class="stat-value">${week_low:.2f}–${week_high:.2f}</div></div>
+      <div class="stat-cell"><div class="stat-label">Average volume</div><div class="stat-value">{avg_volume_text}</div></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-row"><span>Sector</span><b>{sector_text}</b></div>
+      <div class="detail-row"><span>Industry</span><b>{industry_text}</b></div>
+      <div class="detail-row"><span>Employees</span><b>{f'{employees:,.0f}' if employees else '—'}</b></div>
+      <div class="detail-row"><span>Revenue growth</span><b>{f'{revenue_growth*100:+.1f}%' if revenue_growth else '—'}</b></div>
+      <div class="detail-row"><span>Profit margin</span><b>{f'{profit_margin*100:.1f}%' if profit_margin else '—'}</b></div>
+    </div>
+    <div class="mobile-card" style="margin-top:8px;"><div class="eyebrow">BUSINESS SUMMARY</div><div style="font-size:10px;line-height:1.6;color:#55555f;margin-top:8px;">{summary}</div></div>
+    """, unsafe_allow_html=True)
+
+with research_news:
+    st.markdown(f"""
+    <div class="price-panel">
+      <div class="eyebrow">NEWS SIGNAL · NOISE FILTER</div>
+      <div class="hero-price {news_signal['css']}" style="font-size:25px;">{news_signal['label']}</div>
+      <div class="mini-copy">{news_signal['copy']}</div>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-cell"><div class="stat-label">Noise score</div><div class="stat-value">{news_signal['noise_score']}/100</div></div>
+      <div class="stat-cell"><div class="stat-label">Evidence strength</div><div class="stat-value">{news_signal['strength']}</div></div>
+      <div class="stat-cell"><div class="stat-label">Unique headlines</div><div class="stat-value">{news_signal['unique']}</div></div>
+      <div class="stat-cell"><div class="stat-label">Material events</div><div class="stat-value">{news_signal['material']}</div></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-row"><span>Effect on current view</span><b>{news_signal['impact']}</b></div>
+      <div class="detail-row"><span>Observed market reaction</span><b>{news_market_reaction:+.2f}% · {news_reaction_basis}</b></div>
+      <div class="detail-row"><span>Price confirmation</span><b>{'Yes' if news_signal['confirmed'] else 'Not confirmed'}</b></div>
+      <div class="detail-row"><span>Model status</span><b>Heuristic · not yet backtested</b></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    horizon_choice = st.selectbox(
+        "Price scenario horizon",
+        ["1 session", "5 sessions", "20 sessions"],
+        index=1,
+        key=f'news_scenario_horizon_{ticker}',
+    )
+    scenario_sessions = {"1 session": 1, "5 sessions": 5, "20 sessions": 20}[horizon_choice]
+    scenario_vol = max(risk['vol20'] / 100, .10)
+    modeled_move = analysis_price * scenario_vol * math.sqrt(scenario_sessions / 252)
+    shift_factors = {
+        'Confirmed positive': .25,
+        'Confirmed negative': -.25,
+        'Positive · unconfirmed': .10,
+        'Negative · unconfirmed': -.10,
+    }
+    shift_factor = shift_factors.get(news_signal['label'], 0.0)
+    scenario_center = max(.01, analysis_price + modeled_move * shift_factor)
+    scenario_low = max(.01, scenario_center - modeled_move)
+    scenario_high = scenario_center + modeled_move
+    if news_signal['label'] in ('Insufficient evidence', 'Likely noise'):
+        scenario_status = 'Volatility-only fallback'
+        scenario_bias = 'No news adjustment'
+        scenario_explanation = (
+            'The app does not have enough confirmed news evidence to shift the range. '
+            'This is a volatility scenario around the current stock price.'
+        )
+    elif news_signal['label'] == 'Confirmed positive':
+        scenario_status = 'News-confirmed scenario'
+        scenario_bias = 'Positive skew'
+        scenario_explanation = (
+            'The range is modestly tilted upward because headline direction and price reaction agree.'
+        )
+    elif news_signal['label'] == 'Confirmed negative':
+        scenario_status = 'News-confirmed scenario'
+        scenario_bias = 'Negative skew'
+        scenario_explanation = (
+            'The range is modestly tilted downward because headline direction and price reaction agree.'
+        )
+    else:
+        scenario_status = 'Unconfirmed scenario'
+        scenario_bias = ('Positive skew' if shift_factor > 0 else
+                         'Negative skew' if shift_factor < 0 else 'No directional skew')
+        scenario_explanation = (
+            'The headline signal is mixed or unconfirmed, so any directional adjustment remains small.'
+        )
+    analyst_reference_available = (analyst_target_low > 0 and analyst_target_high >= analyst_target_low)
+    analyst_reference_value = (f'${analyst_target_low:,.2f}–${analyst_target_high:,.2f}'
+                               if analyst_reference_available else 'Unavailable')
+    analyst_reference_copy = (
+        f'Mean ${analyst_target_mean:,.2f} · {analyst_opinions} reported opinions. Not a live fair-value model.'
+        if analyst_reference_available and analyst_target_mean > 0
+        else 'No usable analyst target range was returned for this symbol.'
+    )
+    st.markdown(f"""
+    <div class="scenario-answer">
+      <div class="eyebrow">NEWS-INFORMED SCENARIO · {horizon_choice.upper()}</div>
+      <div class="scenario-range">${scenario_low:,.2f}–${scenario_high:,.2f}</div>
+      <div class="scenario-copy">{scenario_status} · {scenario_bias}<br>{scenario_explanation}</div>
+    </div>
+    <div class="price-reference-grid">
+      <div class="price-reference-card">
+        <div class="eyebrow">1 · TECHNICAL PRICE MAP</div>
+        <div class="reference-value">Entry ${plan['entry_low']:.2f}–${plan['entry_high']:.2f}</div>
+        <div class="mini-copy">Profit-review ${plan['target_1']:.2f}–${plan['target_2']:.2f} · Risk review below ${plan['stop']:.2f}</div>
+      </div>
+      <div class="price-reference-card active">
+        <div class="eyebrow">2 · NEWS SCENARIO RANGE</div>
+        <div class="reference-value">${scenario_low:,.2f}–${scenario_high:,.2f}</div>
+        <span class="reference-status">{scenario_status.upper()}</span>
+        <div class="mini-copy" style="margin-top:6px;">Based on ${analysis_price:,.2f} spot, {scenario_vol * 100:.1f}% historical volatility and the current News Signal.</div>
+      </div>
+      <div class="price-reference-card">
+        <div class="eyebrow">3 · ANALYST REFERENCE · NOT FAIR VALUE</div>
+        <div class="reference-value">{analyst_reference_value}</div>
+        <div class="mini-copy">{analyst_reference_copy}</div>
+      </div>
+    </div>
+    <div class="mobile-card">
+      <div class="eyebrow">HOW TO USE THESE NUMBERS</div>
+      <div class="signal-step"><div class="signal-step-mark">1</div><div><div class="plan-row-title">Start with the technical map</div><div class="plan-row-copy">It organizes current support, profit-review and risk levels.</div></div></div>
+      <div class="signal-step"><div class="signal-step-mark">2</div><div><div class="plan-row-title">Use news as a confidence layer</div><div class="plan-row-copy">Confirmed news may skew the short-horizon scenario; noise should not change the plan.</div></div></div>
+      <div class="signal-step"><div class="signal-step-mark">3</div><div><div class="plan-row-title">Do not confuse targets with fair value</div><div class="plan-row-copy">A true fair-value model needs forecast revenue, margins, cash flow and valuation assumptions. This app does not calculate that yet.</div></div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Headline evidence", expanded=False):
+        if news_signal['items']:
+            for item in news_signal['items'][:10]:
+                polarity = finite(item['polarity'])
+                title = html.escape(str(item['title']))
+                tone = "Positive" if polarity > .1 else "Negative" if polarity < -.1 else "Neutral"
+                event_type = html.escape(str(item.get('event_type') or 'General coverage'))
+                provider_name = html.escape(str(item.get('provider') or 'Unknown source'))
+                novelty = 'Repeated / similar' if item.get('duplicate') else 'Unique headline'
+                materiality = 'Material event' if item.get('material') else 'Context / commentary'
+                st.markdown(f"""
+                <div class="detail-card">
+                  <div style="font-size:11px;color:#171821;line-height:1.45;padding:7px 0;">{title}</div>
+                  <div class="mini-copy" style="padding-bottom:7px;">{event_type} · {materiality} · {novelty}<br>{provider_name} · language tone {tone} ({polarity:+.3f})</div>
+                </div>""", unsafe_allow_html=True)
+        else:
+            st.info("No analyzable headlines were returned.")
+    st.markdown('<div class="mobile-note">This range is an experimental scenario, not a forecast or fair-value estimate. The directional skew is intentionally small and has not been calibrated on historical news. Historical-news walk-forward testing is required before claiming improved accuracy.</div>', unsafe_allow_html=True)
+
+# ── Tracking disclaimer ───────────────────────────────────────
+st.markdown(
+    '<div class="mobile-note">Delayed market data for research only. No broker is connected. '
+    'This tracker organizes technical, risk, historical and company evidence. It does not predict the future or provide personalized investment advice.</div>',
+    unsafe_allow_html=True
+)
+
+# The mobile experience above is the active application entry point.
+st.stop()
